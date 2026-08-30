@@ -1,0 +1,29 @@
+[package]
+name = "panopose"
+version = "0.1.0"
+description = "Manual spherical panorama orientation and astronomical planning"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "panopose_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "panopose"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+chrono.workspace = true
+image.workspace = true
+panopose-core = { path = "../crates/panopose-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.11", features = [] }
+tauri-plugin-dialog = "2.7"
+thiserror.workspace = true
