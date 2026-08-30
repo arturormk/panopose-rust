@@ -21,6 +21,7 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 - Save PanoPose orientation, panorama capture time, site, and GPano metadata back into an image using `exiftool`.
 - Export the oriented target as a PNG 2:1 equirectangular panorama at the original target resolution.
 - Export with South on the horizontal centerline, North at the left/right seam, and the horizon vertically centered.
+- Export a Stellarium landscape ZIP containing a horizon directory with `landscape.ini` and the oriented PNG panorama.
 - Show overwrite confirmation and a row-based progress bar during long exports.
 - Toggle automatic sky removal and preview the target panorama with the connected sky region transparent.
 - Export PNG panoramas with sky removed to alpha when `Remove Sky` is enabled.
@@ -32,11 +33,11 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 
 ## Main Workflow
 
-1. Open a target equirectangular panorama.
-2. Confirm or import the site and reference time.
-3. Use the Alt/Az grid, astronomy markers, Planetarium mode, or a calibrated reference panorama as fixed references.
-4. Switch to `Align Target` and adjust yaw, pitch, and roll until the panorama agrees with those references.
-5. Use `Save As` to write orientation/time/site metadata into an image, or use `Export Pano As` to generate a calibrated PNG panorama.
+1. Take a picture with a 360-degree camera, or build a full-sphere 2:1 equirectangular panorama from multiple photos using stitching software.
+2. Load the panorama into PanoPose. Confirm that latitude, longitude, elevation, and `Panorama capture time` match where and when the image was taken.
+3. Use the `Roll (Horizontal Tilt)` spinner to tilt the panorama until the vertical Alt/Az grid lines align with vertical structures in the image.
+4. Switch to `Align Target` and drag the image of the Sun onto PanoPose's Sun marker for the selected site and time.
+5. Use `Save As` to write orientation/time/site metadata into an image, `Export Pano As` to generate a calibrated PNG panorama, or `Export Stellarium ZIP` to generate a Stellarium landscape package.
 
 For ordinary phone photos, PanoPose intentionally imports only EXIF time/site metadata. It does not attempt to project normal rectilinear photos onto the sphere, because reliable FOV estimation is usually unavailable from phone EXIF alone.
 
@@ -54,6 +55,8 @@ For ordinary phone photos, PanoPose intentionally imports only EXIF time/site me
 - Existing output files require explicit overwrite confirmation.
 - Long exports show a modal progress bar based on completed output rows.
 - When `Remove Sky` is enabled, export detects a full-resolution source-space sky mask before resampling and writes sky pixels as transparent alpha.
+
+`Export Stellarium ZIP` writes a `.zip` file containing one landscape directory with `landscape.ini` and the oriented PNG panorama. The exporter fills Stellarium's spherical landscape fields from the current site, elevation, and panorama orientation, and prompts for the landscape name, author, description, ZIP directory name, and PNG filename. Install the resulting package using Stellarium's landscape instructions: <https://stellarium.org/landscapes.html>.
 
 ## Sky Removal
 

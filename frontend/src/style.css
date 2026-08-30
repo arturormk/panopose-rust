@@ -19,7 +19,8 @@ body {
 
 button,
 input,
-select {
+select,
+a {
   font: inherit;
 }
 
@@ -316,6 +317,16 @@ select {
 .button:disabled {
   cursor: not-allowed;
   opacity: 0.42;
+}
+
+.external-link {
+  color: #d9b44a;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.external-link:hover {
+  text-decoration: underline;
 }
 
 .metadata-source {

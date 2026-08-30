@@ -1,0 +1,19 @@
+# Rust build output
+/target/
+
+# Frontend dependencies and build output
+/frontend/node_modules/
+/frontend/dist/
+
+# Tauri-generated schemas and ACL manifests
+/src-tauri/gen/
+
+# Local/editor noise
+/.idea/
+/.vscode/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -5,6 +5,7 @@ pub mod export;
 pub mod orientation;
 pub mod project;
 pub mod sky_mask;
+pub mod stellarium;
 pub mod synthetic;
 pub mod version;
 
@@ -16,4 +17,5 @@ pub use error::{PanoposeError, Result};
 pub use orientation::Orientation;
 pub use project::{CalibrationStatus, Panorama, Project, Site, Viewpoint};
 pub use sky_mask::SkyRemovalSettings;
+pub use stellarium::{StellariumLandscape, stellarium_landscape_ini};
 pub use version::APP_VERSION;

@@ -96,6 +96,15 @@ interface SkyPreviewCacheKey {
   pose: Pose;
 }
 
+interface StellariumExportDetails {
+  outputZip: string;
+  directoryName: string;
+  textureFilename: string;
+  landscapeName: string;
+  author: string;
+  description: string;
+}
+
 interface PanoposeMetadata {
   yaw_deg: number | null;
   pitch_deg: number | null;
@@ -180,6 +189,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <h2>Panorama</h2>
         <button id="open-target" class="button" type="button">Open Image</button>
         <button id="export-image" class="button" type="button">Export Pano As</button>
+        <button id="export-stellarium" class="button" type="button">Export Stellarium ZIP</button>
         <button id="save-metadata-as" class="button" type="button">Save As</button>
         <label class="field">Save target
           <input id="save-path" type="text" readonly placeholder="No image opened" />
@@ -268,7 +278,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <label class="field">Pitch (Altitude)
           <input id="roll" type="number" step="0.001" value="0" />
         </label>
-        <label class="field">Roll (Horizon Tilt)
+        <label class="field">Roll (Horizontal Tilt)
           <input id="pitch" type="number" step="0.001" value="0" />
         </label>
       </section>
@@ -324,6 +334,31 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button id="metadata-import-site" class="button" type="button">Import Site</button>
           <button id="metadata-import-both" class="button" type="button">Import Both</button>
           <button id="metadata-import-cancel" class="button secondary" type="button">Cancel</button>
+        </div>
+      </section>
+    </div>
+    <div class="modal-backdrop" id="stellarium-export-modal" hidden>
+      <section class="metadata-modal" role="dialog" aria-modal="true" aria-labelledby="stellarium-export-title">
+        <h2 id="stellarium-export-title">Export Stellarium ZIP</h2>
+        <label class="field">Landscape name
+          <input id="stellarium-name" type="text" />
+        </label>
+        <label class="field">Author
+          <input id="stellarium-author" type="text" />
+        </label>
+        <label class="field">Description
+          <input id="stellarium-description" type="text" />
+        </label>
+        <label class="field">Directory in ZIP
+          <input id="stellarium-directory" type="text" />
+        </label>
+        <label class="field">Panorama PNG
+          <input id="stellarium-texture" type="text" />
+        </label>
+        <a class="external-link" href="https://stellarium.org/landscapes.html" target="_blank" rel="noreferrer">Stellarium landscape installation</a>
+        <div class="modal-actions">
+          <button id="stellarium-export-confirm" class="button" type="button">Export ZIP</button>
+          <button id="stellarium-export-cancel" class="button secondary" type="button">Cancel</button>
         </div>
       </section>
     </div>
@@ -391,6 +426,7 @@ document.querySelector("#mode-align")!.addEventListener("click", () => setMode("
 
 document.querySelector("#open-target")!.addEventListener("click", () => openTargetImage());
 document.querySelector("#export-image")!.addEventListener("click", () => exportCurrentTargetImage());
+document.querySelector("#export-stellarium")!.addEventListener("click", () => exportCurrentTargetStellariumZip());
 document.querySelector("#save-metadata-as")!.addEventListener("click", () => saveMetadataAs());
 document.querySelector("#add-reference")!.addEventListener("click", () => addReferenceImages());
 document.querySelector("#load-exif-metadata")!.addEventListener("click", () => loadExifMetadataFromImage());
@@ -1487,6 +1523,141 @@ async function exportCurrentTargetImage(): Promise<void> {
   }
 }
 
+async function exportCurrentTargetStellariumZip(): Promise<void> {
+  try {
+    const target = getTargetLayer();
+    if (!target || !state.openedImagePath) {
+      alert("Open a target image before exporting a Stellarium landscape.");
+      return;
+    }
+
+    const details = await chooseStellariumExportDetails(target);
+    if (!details) return;
+
+    const existingFile = await invoke<boolean>("path_exists", { path: details.outputZip }).catch(() => false);
+    const overwriteExisting = existingFile ? await confirmStellariumOverwrite(details.outputZip) : true;
+    if (!overwriteExisting) return;
+
+    const latitude = Number(document.querySelector<HTMLInputElement>("#latitude")!.value);
+    const longitude = Number(document.querySelector<HTMLInputElement>("#longitude")!.value);
+    const elevation = Number(document.querySelector<HTMLInputElement>("#elevation")!.value);
+
+    let unlistenProgress: UnlistenFn | null = await listen<ExportProgress>("export-progress", (event) => {
+      updateExportProgress(event.payload.completed_rows, event.payload.total_rows);
+    });
+
+    showExportProgress(details.outputZip, target.dimensions.width, target.dimensions.height, "Stellarium landscape ZIP");
+    await waitForNextPaint();
+    try {
+      await invoke("export_stellarium_landscape", {
+        request: {
+          input: state.openedImagePath,
+          output_zip: details.outputZip,
+          directory_name: details.directoryName,
+          texture_filename: details.textureFilename,
+          landscape_name: details.landscapeName,
+          author: details.author,
+          description: details.description,
+          width: target.dimensions.width,
+          height: target.dimensions.height,
+          yaw_deg: state.pose.yaw,
+          pitch_deg: state.pose.pitch,
+          roll_deg: state.pose.roll,
+          sky_removal: state.skyRemoval.enabled ? currentSkyRemovalSettings() : null,
+          latitude_deg: latitude,
+          longitude_deg: longitude,
+          elevation_m: elevation,
+        },
+      });
+    } finally {
+      unlistenProgress?.();
+      unlistenProgress = null;
+      hideExportProgress();
+    }
+
+    rememberImageDirectory(details.outputZip);
+    document.querySelector("#image-status")!.textContent = `Exported Stellarium ZIP: ${basename(details.outputZip)}`;
+  } catch (error) {
+    alert(`Could not export Stellarium landscape: ${String(error)}`);
+  }
+}
+
+async function chooseStellariumExportDetails(target: ImageLayer): Promise<StellariumExportDetails | null> {
+  const sourceName = filenameStem(target.name);
+  const defaultDirectory = slugifyFilename(sourceName || "panopose-landscape");
+  const defaultTexture = `${defaultDirectory}.png`;
+  const outputZip = await save({
+    title: "Export Stellarium landscape ZIP",
+    defaultPath: state.lastImageDirectory ? `${state.lastImageDirectory}/${defaultDirectory}.zip` : `${defaultDirectory}.zip`,
+    filters: [
+      {
+        name: "ZIP",
+        extensions: ["zip"],
+      },
+    ],
+  });
+  if (!outputZip) return null;
+
+  return new Promise((resolve) => {
+    const modal = document.querySelector<HTMLDivElement>("#stellarium-export-modal")!;
+    const nameInput = document.querySelector<HTMLInputElement>("#stellarium-name")!;
+    const authorInput = document.querySelector<HTMLInputElement>("#stellarium-author")!;
+    const descriptionInput = document.querySelector<HTMLInputElement>("#stellarium-description")!;
+    const directoryInput = document.querySelector<HTMLInputElement>("#stellarium-directory")!;
+    const textureInput = document.querySelector<HTMLInputElement>("#stellarium-texture")!;
+    const exportButton = document.querySelector<HTMLButtonElement>("#stellarium-export-confirm")!;
+    const cancelButton = document.querySelector<HTMLButtonElement>("#stellarium-export-cancel")!;
+
+    nameInput.value = sourceName || "PanoPose Landscape";
+    authorInput.value = "";
+    descriptionInput.value = "";
+    directoryInput.value = defaultDirectory;
+    textureInput.value = defaultTexture;
+
+    const finish = (details: StellariumExportDetails | null) => {
+      modal.hidden = true;
+      exportButton.removeEventListener("click", submit);
+      cancelButton.removeEventListener("click", cancel);
+      modal.removeEventListener("click", backdropCancel);
+      document.removeEventListener("keydown", escapeCancel);
+      resolve(details);
+    };
+
+    const submit = () => {
+      const landscapeName = nameInput.value.trim();
+      const directoryName = directoryInput.value.trim();
+      const textureFilename = pngExportPath(textureInput.value.trim());
+      if (!landscapeName || !directoryName || !textureFilename) {
+        alert("Landscape name, ZIP directory, and panorama PNG filename are required.");
+        return;
+      }
+      finish({
+        outputZip: zipExportPath(outputZip),
+        directoryName,
+        textureFilename,
+        landscapeName,
+        author: authorInput.value.trim(),
+        description: descriptionInput.value.trim(),
+      });
+    };
+
+    const cancel = () => finish(null);
+    const backdropCancel = (event: MouseEvent) => {
+      if (event.target === modal) finish(null);
+    };
+    const escapeCancel = (event: KeyboardEvent) => {
+      if (event.key === "Escape") finish(null);
+    };
+
+    exportButton.addEventListener("click", submit);
+    cancelButton.addEventListener("click", cancel);
+    modal.addEventListener("click", backdropCancel);
+    document.addEventListener("keydown", escapeCancel);
+    modal.hidden = false;
+    nameInput.focus();
+  });
+}
+
 function pngExportPath(path: string): string {
   const extensionIndex = path.lastIndexOf(".");
   const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
@@ -1494,6 +1665,30 @@ function pngExportPath(path: string): string {
     return path;
   }
   return `${path}.png`;
+}
+
+function zipExportPath(path: string): string {
+  const extensionIndex = path.lastIndexOf(".");
+  const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (extensionIndex > separatorIndex && path.slice(extensionIndex).toLowerCase() === ".zip") {
+    return path;
+  }
+  return `${path}.zip`;
+}
+
+function filenameStem(path: string): string {
+  const name = basename(path);
+  const extensionIndex = name.lastIndexOf(".");
+  return extensionIndex > 0 ? name.slice(0, extensionIndex) : name;
+}
+
+function slugifyFilename(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "panopose-landscape";
 }
 
 async function confirmExportOverwrite(targetPath: string): Promise<boolean> {
@@ -1508,12 +1703,24 @@ async function confirmExportOverwrite(targetPath: string): Promise<boolean> {
   );
 }
 
-function showExportProgress(targetPath: string, width: number, height: number): void {
+async function confirmStellariumOverwrite(targetPath: string): Promise<boolean> {
+  return confirm(
+    ["Overwrite the existing Stellarium ZIP export?", "", targetPath, "", "This replaces the existing file."].join("\n"),
+    {
+      title: "Confirm Stellarium Export",
+      kind: "warning",
+      okLabel: "Export",
+      cancelLabel: "Cancel",
+    },
+  );
+}
+
+function showExportProgress(targetPath: string, width: number, height: number, outputKind = "panorama"): void {
   const modal = document.querySelector<HTMLDivElement>("#export-progress-modal")!;
   const message = document.querySelector<HTMLDivElement>("#export-progress-message")!;
   message.textContent = state.skyRemoval.enabled
-    ? `Detecting sky, then exporting panorama to ${targetPath} at ${width} x ${height}`
-    : `Exporting panorama to ${targetPath} at ${width} x ${height}`;
+    ? `Detecting sky, then exporting ${outputKind} to ${targetPath} at ${width} x ${height}`
+    : `Exporting ${outputKind} to ${targetPath} at ${width} x ${height}`;
   updateExportProgress(0, height);
   modal.hidden = false;
 }

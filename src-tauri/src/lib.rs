@@ -4,13 +4,14 @@ use chrono::{DateTime, FixedOffset};
 use image::{DynamicImage, ImageFormat, ImageReader};
 use panopose_core::{
     APP_VERSION, AstronomyProvider, CelestialMarker, CelestialObject, Orientation, Project,
-    SkyRemovalSettings, StarMarker,
+    SkyRemovalSettings, StarMarker, StellariumLandscape,
     astronomy::{ApproximateAstronomyProvider, Observer},
     export::{
         ExportRequest, export_equirectangular_with_mask_and_progress,
         validate_equirectangular_dimensions,
     },
     sky_mask::{detect_sky_alpha_mask, preview_sky_removed},
+    stellarium_landscape_ini,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -50,6 +51,26 @@ struct ExportImageRequest {
     pitch_deg: f64,
     roll_deg: f64,
     sky_removal: Option<SkyRemovalSettings>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportStellariumLandscapeRequest {
+    input: PathBuf,
+    output_zip: PathBuf,
+    directory_name: String,
+    texture_filename: String,
+    landscape_name: String,
+    author: String,
+    description: String,
+    width: u32,
+    height: u32,
+    yaw_deg: f64,
+    pitch_deg: f64,
+    roll_deg: f64,
+    sky_removal: Option<SkyRemovalSettings>,
+    latitude_deg: f64,
+    longitude_deg: f64,
+    elevation_m: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +208,249 @@ async fn export_image(app: AppHandle, request: ExportImageRequest) -> Result<(),
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn export_stellarium_landscape(
+    app: AppHandle,
+    request: ExportStellariumLandscapeRequest,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory_name = validate_stellarium_directory_name(&request.directory_name)?;
+        let texture_filename = validate_stellarium_texture_filename(&request.texture_filename)?;
+
+        let source = ImageReader::open(&request.input)
+            .map_err(|err| err.to_string())?
+            .decode()
+            .map_err(|err| err.to_string())?;
+        let alpha_mask = if let Some(settings) = request.sky_removal {
+            let _ = app.emit(
+                "export-progress",
+                ExportProgress {
+                    completed_rows: 0,
+                    total_rows: request.height,
+                },
+            );
+            Some(detect_sky_alpha_mask(&source, settings).map_err(|err| err.to_string())?)
+        } else {
+            None
+        };
+        let exported = export_equirectangular_with_mask_and_progress(
+            &source,
+            ExportRequest {
+                width: request.width,
+                height: request.height,
+                center_azimuth_deg: 180.0,
+                orientation: Orientation::from_yaw_pitch_roll_deg(
+                    request.yaw_deg,
+                    request.pitch_deg,
+                    request.roll_deg,
+                ),
+            },
+            alpha_mask.as_ref(),
+            |completed_rows, total_rows| {
+                let _ = app.emit(
+                    "export-progress",
+                    ExportProgress {
+                        completed_rows,
+                        total_rows,
+                    },
+                );
+            },
+        )
+        .map_err(|err| err.to_string())?;
+        let mut texture_bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(exported)
+            .write_to(&mut texture_bytes, ImageFormat::Png)
+            .map_err(|err| err.to_string())?;
+
+        let ini = stellarium_landscape_ini(&StellariumLandscape {
+            name: request.landscape_name,
+            author: request.author,
+            description: request.description,
+            maptex: texture_filename.clone(),
+            angle_rotatez_deg: -90.0,
+            latitude_deg: request.latitude_deg,
+            longitude_deg: request.longitude_deg,
+            altitude_m: request.elevation_m,
+        });
+        let zip_bytes = build_stellarium_zip(
+            &directory_name,
+            &texture_filename,
+            ini.as_bytes(),
+            texture_bytes.get_ref(),
+        )?;
+        std::fs::write(&request.output_zip, zip_bytes)
+            .map_err(|err| format!("failed to write {}: {err}", request.output_zip.display()))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn validate_stellarium_directory_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed == "."
+        || trimmed == ".."
+    {
+        return Err("landscape directory name must be a plain directory name".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_stellarium_texture_filename(filename: &str) -> Result<String, String> {
+    let trimmed = filename.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed == "."
+        || trimmed == ".."
+    {
+        return Err("texture filename must be a plain PNG filename".to_string());
+    }
+    if !trimmed.to_ascii_lowercase().ends_with(".png") {
+        return Err("texture filename must end with .png".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn build_stellarium_zip(
+    directory_name: &str,
+    texture_filename: &str,
+    ini_bytes: &[u8],
+    texture_bytes: &[u8],
+) -> Result<Vec<u8>, String> {
+    let directory_entry = format!("{directory_name}/");
+    let ini_entry = format!("{directory_name}/landscape.ini");
+    let texture_entry = format!("{directory_name}/{texture_filename}");
+    let mut zip = Vec::new();
+    let mut central_directory = Vec::new();
+
+    add_stored_zip_entry(&mut zip, &mut central_directory, &directory_entry, &[])?;
+    add_stored_zip_entry(&mut zip, &mut central_directory, &ini_entry, ini_bytes)?;
+    add_stored_zip_entry(
+        &mut zip,
+        &mut central_directory,
+        &texture_entry,
+        texture_bytes,
+    )?;
+
+    let central_directory_offset = checked_u32(zip.len(), "ZIP central directory offset")?;
+    let central_directory_size =
+        checked_u32(central_directory.len(), "ZIP central directory size")?;
+    zip.extend_from_slice(&central_directory);
+    write_u32_le(&mut zip, 0x0605_4b50);
+    write_u16_le(&mut zip, 0);
+    write_u16_le(&mut zip, 0);
+    write_u16_le(&mut zip, 3);
+    write_u16_le(&mut zip, 3);
+    write_u32_le(&mut zip, central_directory_size);
+    write_u32_le(&mut zip, central_directory_offset);
+    write_u16_le(&mut zip, 0);
+    Ok(zip)
+}
+
+fn add_stored_zip_entry(
+    zip: &mut Vec<u8>,
+    central_directory: &mut Vec<u8>,
+    name: &str,
+    data: &[u8],
+) -> Result<(), String> {
+    let local_header_offset = checked_u32(zip.len(), "ZIP local header offset")?;
+    let name_bytes = name.as_bytes();
+    let name_len = checked_u16(name_bytes.len(), "ZIP entry name length")?;
+    let data_len = checked_u32(data.len(), "ZIP entry data length")?;
+    let crc = crc32(data);
+
+    write_u32_le(zip, 0x0403_4b50);
+    write_u16_le(zip, 20);
+    write_u16_le(zip, 0);
+    write_u16_le(zip, 0);
+    write_u16_le(zip, 0);
+    write_u16_le(zip, 0);
+    write_u32_le(zip, crc);
+    write_u32_le(zip, data_len);
+    write_u32_le(zip, data_len);
+    write_u16_le(zip, name_len);
+    write_u16_le(zip, 0);
+    zip.extend_from_slice(name_bytes);
+    zip.extend_from_slice(data);
+
+    write_u32_le(central_directory, 0x0201_4b50);
+    write_u16_le(central_directory, 20);
+    write_u16_le(central_directory, 20);
+    write_u16_le(central_directory, 0);
+    write_u16_le(central_directory, 0);
+    write_u16_le(central_directory, 0);
+    write_u16_le(central_directory, 0);
+    write_u32_le(central_directory, crc);
+    write_u32_le(central_directory, data_len);
+    write_u32_le(central_directory, data_len);
+    write_u16_le(central_directory, name_len);
+    write_u16_le(central_directory, 0);
+    write_u16_le(central_directory, 0);
+    write_u16_le(central_directory, 0);
+    write_u16_le(central_directory, 0);
+    write_u32_le(
+        central_directory,
+        if name.ends_with('/') { 0x10 } else { 0 },
+    );
+    write_u32_le(central_directory, local_header_offset);
+    central_directory.extend_from_slice(name_bytes);
+
+    Ok(())
+}
+
+fn checked_u16(value: usize, label: &str) -> Result<u16, String> {
+    u16::try_from(value).map_err(|_| format!("{label} is too large"))
+}
+
+fn checked_u32(value: usize, label: &str) -> Result<u32, String> {
+    u32::try_from(value).map_err(|_| format!("{label} is too large"))
+}
+
+fn write_u16_le(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_u32_le(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crc32_matches_standard_check_value() {
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+    }
+
+    #[test]
+    fn stellarium_zip_contains_directory_ini_and_texture_entries() {
+        let zip = build_stellarium_zip("east-terrace", "east-terrace.png", b"ini", b"png")
+            .expect("ZIP should be built");
+        let text = String::from_utf8_lossy(&zip);
+
+        assert!(text.contains("east-terrace/"));
+        assert!(text.contains("east-terrace/landscape.ini"));
+        assert!(text.contains("east-terrace/east-terrace.png"));
+        assert!(zip.ends_with(&[0, 0]));
+    }
 }
 
 #[tauri::command]
@@ -338,6 +602,7 @@ pub fn run() {
             astronomy_markers,
             star_markers,
             export_image,
+            export_stellarium_landscape,
             preview_sky_removed_image,
             write_panopose_metadata
         ])
