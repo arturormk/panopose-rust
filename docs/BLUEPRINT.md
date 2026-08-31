@@ -67,11 +67,12 @@ As of the current implementation, PanoPose is a working Tauri + Rust + TypeScrip
 * export centered on South/180° azimuth with the horizon vertically centered;
 * export overwrite confirmation and a modal progress bar driven by backend row-progress events;
 * automatic, non-destructive sky-removal preview for the target panorama;
-* cached sky-removal preview reuse while the target image, alignment angles, and sky sensitivity are unchanged;
-* an extended low-sensitivity range for stricter sky detection on ambiguous ground colors;
+* cached sky-removal preview reuse while the target image and alignment angles are unchanged;
+* `skyseg-ncnn`-based sky removal when the external executable is available on `PATH`;
 * PNG export with sky removed to alpha when `Remove Sky` is enabled;
 * a configured square RGBA application icon for Tauri release bundles;
 * a root `quickstart-panopose.sh` helper for dependency setup, current-platform release builds, and optional app installation;
+* a root `quickstart-skyseg-ncnn.sh` helper for guided Linux builds of the optional external `skyseg-ncnn` dependency under ignored `./thirdparty/` checkouts;
 * Sun, Moon, planet, and selected bright-star markers rendered as open circles with labels below;
 * a `Planetarium` toggle that renders the 1500 brightest bundled catalog stars above the horizon;
 * automatic Planetarium enabling when imported EXIF time places the Sun below the horizon;
@@ -887,6 +888,7 @@ Current implementation:
 
 * `Export Pano As` exports the current target as PNG only, preserving the target image's original dimensions;
 * South/180° is the fixed export center in the UI;
+* `Export Stellarium ZIP` bakes the current target pose into the texture and keeps Stellarium's `angle_rotatez` at the fixed spherical-texture convention;
 * existing output files require confirmation before overwrite;
 * export runs in Rust on Tauri's blocking thread pool and reports progress by completed output rows.
 
@@ -971,7 +973,7 @@ This should be non-destructive.
 
 The preferred conceptual model is an alpha/mask layer rather than changing source RGB pixels permanently.
 
-An initial implementation may use conventional color-based segmentation rather than AI.
+The current implementation uses the external `skyseg-ncnn` executable when it is available on `PATH`.
 
 Useful controls might include:
 
@@ -989,10 +991,9 @@ Selections and masks should therefore be seam-aware.
 
 Current implementation:
 
-* `Remove Sky` detects a source-space alpha mask for the target panorama and previews it by swapping in a derived transparent PNG texture;
-* detection is automatic, with a `Sky sensitivity` slider rather than manual brush editing;
-* sky removal is non-destructive and only affects preview/export;
-* the first implementation is conventional color/top-down boundary segmentation, not AI matting.
+* `Remove Sky` is shown only when `skyseg-ncnn` is available on `PATH`;
+* preview/export renders the corrected panorama, runs `skyseg-ncnn <corrected-pano-image> <mask.jpg>`, applies the mask as inverted alpha, and subtracts local sky color from semi-transparent edge pixels;
+* sky removal is non-destructive and only affects preview/export.
 
 ---
 
@@ -1058,8 +1059,7 @@ Other formats may be supported if convenient.
 Current implementation:
 
 * `Export Pano As` writes RGBA PNG output;
-* when `Remove Sky` is enabled, the full-resolution sky mask is sampled during the same export resampling pass and becomes output alpha;
-* foreground preservation takes priority over removing every cloud or bright object in the sky.
+* when `Remove Sky` is enabled, the corrected panorama is segmented by `skyseg-ncnn` and the resulting mask becomes output alpha.
 
 ---
 
@@ -1186,7 +1186,7 @@ Current behavior:
 * checks local Rust, Node.js, and npm availability;
 * offers to install `cargo-tauri` if it is missing;
 * installs frontend dependencies with `npm ci --prefix frontend`;
-* asks which final packages to build, unless `--bundles` or `--no-bundle` is provided;
+* asks which final packages to build using a numbered menu, unless `--bundles` or `--no-bundle` is provided;
 * builds a current-platform Tauri release with `cargo tauri build --ci`;
 * lists generated bundle artifacts and the release executable path;
 * offers to install the preferred package where supported.
@@ -1199,11 +1199,13 @@ On Linux, install preference is:
 * `.rpm` via `sudo rpm -Uvh`;
 * `.AppImage` copied to `~/.local/bin/panopose.AppImage` with a desktop entry under `~/.local/share/applications`.
 
-The Linux package prompt accepts `deb`, `rpm`, `appimage`, comma-separated combinations, `all`, or `none`. If app installation is skipped or declined, the script prints absolute paths for the release executable and the requested final package files.
+The Linux package prompt shows numbered options for `deb`, `rpm`, `appimage`, `deb,rpm`, `all`, or `none`, while still accepting typed names and comma-separated combinations. If app installation is skipped or declined, the script prints absolute paths for the release executable and the requested final package files.
 
 AppImage generation depends on Tauri's linuxdeploy/AppImage tooling and the host's AppImage/FUSE compatibility. The script may still leave usable `.deb` or `.rpm` artifacts when AppImage packaging fails on a constrained host.
 
 The script intentionally does not cross-compile.
+
+The repository also includes `quickstart-skyseg-ncnn.sh` as the practical Linux setup helper for the optional external sky removal dependency. It explains the external clone/build/install steps, asks for permission before starting, clones or reuses `Tencent/ncnn` and `knyipab/skyseg-ncnn` under ignored `./thirdparty/ncnn` and `./thirdparty/skyseg-ncnn` directories, defaults installation to `$HOME/.local`, and only offers the dated compatibility patches after an unpatched `skyseg-ncnn` build fails.
 
 ---
 

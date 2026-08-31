@@ -22,9 +22,12 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 - Export the oriented target as a PNG 2:1 equirectangular panorama at the original target resolution.
 - Export with South on the horizontal centerline, North at the left/right seam, and the horizon vertically centered.
 - Export a Stellarium landscape ZIP containing a horizon directory with `landscape.ini` and the oriented PNG panorama.
-- Show overwrite confirmation and a row-based progress bar during long exports.
-- Toggle automatic sky removal and preview the target panorama with the connected sky region transparent.
-- Export PNG panoramas with sky removed to alpha when `Remove Sky` is enabled.
+- Keep Stellarium `angle_rotatez` at the fixed texture convention while baking the current PanoPose orientation into the exported panorama image.
+- Prompt for Stellarium landscape name, author, description, ZIP directory, and texture filename without dismissing the dialog on stray outside clicks or key presses.
+- Show overwrite confirmation and a row-based progress bar during long PNG and Stellarium exports.
+- Detect the optional external `skyseg-ncnn` executable on `PATH` and show `Remove Sky` only when it is available.
+- Toggle automatic `skyseg-ncnn` sky removal and preview the target panorama with sky transparent.
+- Export PNG and Stellarium panoramas with sky removed to alpha when `Remove Sky` is enabled.
 - Display Sun, Moon, planet, and bright-star markers as open circles with labels below them.
 - Enable Planetarium mode to show the 1500 brightest catalog stars above the horizon for the selected site and time.
 - Automatically enable Planetarium mode when EXIF-imported time places the Sun below the horizon.
@@ -51,23 +54,23 @@ For ordinary phone photos, PanoPose intentionally imports only EXIF time/site me
 - The output is a full-sphere 2:1 equirectangular image covering 360° azimuth by 180° altitude.
 - South, azimuth 180°, is centered horizontally.
 - The geometric horizon is centered vertically.
+- The current alignment pose is baked into the output pixels so the exported image matches the preview orientation.
 - The save dialog only offers PNG output; if the selected name has no `.png` suffix, PanoPose appends one.
 - Existing output files require explicit overwrite confirmation.
 - Long exports show a modal progress bar based on completed output rows.
-- When `Remove Sky` is enabled, export detects a full-resolution source-space sky mask before resampling and writes sky pixels as transparent alpha.
+- When `Remove Sky` is enabled, export runs `skyseg-ncnn` on the oriented panorama and writes sky pixels as transparent alpha.
 
-`Export Stellarium ZIP` writes a `.zip` file containing one landscape directory with `landscape.ini` and the oriented PNG panorama. The exporter fills Stellarium's spherical landscape fields from the current site, elevation, and panorama orientation, and prompts for the landscape name, author, description, ZIP directory name, and PNG filename. Install the resulting package using Stellarium's landscape instructions: <https://stellarium.org/landscapes.html>.
+`Export Stellarium ZIP` writes a `.zip` file containing one landscape directory with `landscape.ini` and a posed PNG panorama. The exporter also fills the current site and elevation, prompts for the landscape name, author, description, ZIP directory name, and PNG filename, and keeps Stellarium's `angle_rotatez` at `-90` while baking the current PanoPose pose into the PNG. Install the resulting package using Stellarium's landscape instructions: <https://stellarium.org/landscapes.html>.
 
 ## Sky Removal
 
-`Remove Sky` is an automatic, non-destructive mask preview for the target panorama.
+`Remove Sky` is an automatic, non-destructive mask preview for the target panorama. It depends on the external `skyseg-ncnn` executable from <https://github.com/knyipab/skyseg-ncnn>. The control is shown only when `skyseg-ncnn` is installed and available on `PATH`.
 
-- Detection starts from the connected top/zenith sky region, including across the equirectangular left/right seam.
-- Blue sky and bright low-saturation sky are treated as removable candidates.
-- Sun, Moon, and clouds connected to the sky region are removed with the sky.
-- Disconnected blue or white foreground objects are intended to stay opaque.
-- The `Sky sensitivity` slider controls how broadly the detector accepts sky-colored pixels; values below zero are extra strict for ambiguous blue or pale ground.
-- Toggling `Remove Sky` off and back on reuses the cached preview while the target image, alignment angles, and sky sensitivity are unchanged.
+- Preview/export first renders the oriented panorama, then runs `skyseg-ncnn <corrected-pano-image> <mask.jpg>`.
+- The generated mask is applied as inverted alpha: black stays opaque, white becomes transparent, and gray becomes partial transparency.
+- Semi-transparent border pixels are decontaminated by subtracting the local sky color from the stored RGB.
+- Toggling `Remove Sky` off and back on reuses the cached preview while the target image and alignment angles are unchanged.
+- PanoPose treats sky segmentation as an optional external capability; without `skyseg-ncnn`, the rest of the app and exports continue to work normally.
 
 ## Versioning
 
@@ -79,9 +82,9 @@ PanoPose displays application versions with a `v` prefix.
 
 ## Repository Layout
 
-- `crates/panopose-core`: reusable Rust model, coordinate math, panorama export with optional progress reporting, sky-mask detection, synthetic test assets, and astronomy provider boundary.
+- `crates/panopose-core`: reusable Rust model, coordinate math, panorama export with optional progress reporting and alpha masks, synthetic test assets, and astronomy provider boundary.
 - `crates/panopose-cli`: developer CLI for generating validation panoramas and exercising core workflows.
-- `src-tauri`: Tauri v2 desktop shell and Rust commands, including metadata writing and blocking-thread image export with progress events.
+- `src-tauri`: Tauri v2 desktop shell and Rust commands, including metadata writing, `skyseg-ncnn` integration, Stellarium ZIP creation, and blocking-thread image export with progress events.
 - `frontend`: Vite + TypeScript + Three.js viewer.
 
 ## Development
@@ -99,7 +102,7 @@ The quickstart script:
 - checks for Rust, Node.js, and npm;
 - offers to install `cargo-tauri` if it is missing;
 - installs frontend dependencies with `npm ci --prefix frontend`;
-- asks which final packages to build, or accepts explicit `--bundles` / `--no-bundle` options;
+- asks which final packages to build using a numbered menu, or accepts explicit `--bundles` / `--no-bundle` options;
 - builds the release app with `cargo tauri build --ci`;
 - lists generated bundle artifacts and the release executable path;
 - offers to install the preferred generated package.
@@ -114,7 +117,7 @@ Useful options:
 ./quickstart-panopose.sh --no-bundle
 ```
 
-On Linux, the package prompt accepts `deb`, `rpm`, `appimage`, comma-separated combinations such as `deb,rpm`, `all`, or `none`. The default prefers `.deb` when `dpkg` is available, then `.rpm` when `rpm` is available, then `.AppImage`.
+On Linux, the package prompt shows a numbered menu for `deb`, `rpm`, `appimage`, `deb,rpm`, `all`, or `none`. Typed names and comma-separated combinations such as `deb,rpm` are still accepted. The default prefers `.deb` when `dpkg` is available, then `.rpm` when `rpm` is available, then `.AppImage`.
 
 If app installation is skipped or declined, the script prints the absolute path to the release executable and any final package files that were requested and produced. When installing, the installer prefers a generated `.deb` when `dpkg` is available, then `.rpm` when `rpm` is available, then `.AppImage`. AppImage installation copies the file to `~/.local/bin/panopose.AppImage` and creates a desktop entry under `~/.local/share/applications`.
 
@@ -137,6 +140,16 @@ cargo tauri dev
 ```
 
 `Save As` metadata writing requires `exiftool` to be installed and available on `PATH`. It writes EXIF capture-time tags from `Panorama capture time`, while the separate astronomical reference time is stored in PanoPose XMP metadata. PNG panorama export uses the Rust `image` backend and does not require `exiftool`.
+
+Sky removal requires `skyseg-ncnn` to be installed separately and available on `PATH`. When it is missing, PanoPose hides the `Remove Sky` toggle and exports normal opaque panoramas.
+
+For a guided Linux build/install of `skyseg-ncnn`, run:
+
+```sh
+./quickstart-skyseg-ncnn.sh
+```
+
+The helper builds under ignored `thirdparty/ncnn` and `thirdparty/skyseg-ncnn` directories, installs to `$HOME/.local` by default, asks for permission before starting, and only offers the dated compatibility patches after an unpatched `skyseg-ncnn` build fails. Manual build notes are in [docs/HOW-TO-skyseg-ncnn.md](docs/HOW-TO-skyseg-ncnn.md).
 
 ## Data Sources
 

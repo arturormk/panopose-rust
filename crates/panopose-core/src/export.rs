@@ -53,7 +53,6 @@ pub fn export_equirectangular_with_mask_and_progress(
     }
 
     let source = source.to_rgba8();
-    let source_mapping = EquirectangularMapping::new(source.width(), source.height(), 180.0);
     let output_mapping =
         EquirectangularMapping::new(request.width, request.height, request.center_azimuth_deg);
     let mut output = RgbaImage::new(request.width, request.height);
@@ -63,7 +62,8 @@ pub fn export_equirectangular_with_mask_and_progress(
         for x in 0..request.width {
             let world_alt_az = output_mapping.pixel_center_to_alt_az(x, y);
             let source_alt_az = request.orientation.world_alt_az_to_source(world_alt_az);
-            let (sx, sy) = source_mapping.alt_az_to_pixel_f64(source_alt_az);
+            let (sx, sy) =
+                viewer_texture_alt_az_to_pixel_f64(source.width(), source.height(), source_alt_az);
             let mut pixel = sample_wrapped_bilinear(&source, sx, sy);
             if let Some(mask) = alpha_mask {
                 let mask_alpha = sample_wrapped_bilinear_gray(mask, sx, sy).0[0] as u16;
@@ -135,12 +135,32 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 pub fn source_pixel_to_world_alt_az(
-    mapping: EquirectangularMapping,
+    source_mapping: EquirectangularMapping,
     orientation: Orientation,
     x: u32,
     y: u32,
 ) -> AltAz {
-    orientation.source_alt_az_to_world(mapping.pixel_center_to_alt_az(x, y))
+    orientation.source_alt_az_to_world(viewer_texture_pixel_center_to_alt_az(
+        source_mapping.width,
+        source_mapping.height,
+        x,
+        y,
+    ))
+}
+
+pub fn viewer_texture_pixel_center_to_alt_az(width: u32, height: u32, x: u32, y: u32) -> AltAz {
+    let u = (x as f64 + 0.5) / width as f64;
+    let v = (y as f64 + 0.5) / height as f64;
+    AltAz {
+        azimuth_deg: crate::coords::normalize_degrees(90.0 - u * 360.0),
+        altitude_deg: 90.0 - v * 180.0,
+    }
+}
+
+fn viewer_texture_alt_az_to_pixel_f64(width: u32, height: u32, alt_az: AltAz) -> (f64, f64) {
+    let u = crate::coords::normalize_degrees(90.0 - alt_az.azimuth_deg) / 360.0;
+    let v = (90.0 - alt_az.altitude_deg) / 180.0;
+    (u * width as f64 - 0.5, v * height as f64 - 0.5)
 }
 
 #[cfg(test)]
@@ -201,6 +221,20 @@ mod tests {
 
         assert_eq!(reports.first(), Some(&(0, 16)));
         assert_eq!(reports.last(), Some(&(16, 16)));
+    }
+
+    #[test]
+    fn viewer_texture_mapping_matches_threejs_sphere_uvs() {
+        let east = viewer_texture_pixel_center_to_alt_az(360, 180, 0, 89);
+        let north = viewer_texture_pixel_center_to_alt_az(360, 180, 89, 89);
+        let west = viewer_texture_pixel_center_to_alt_az(360, 180, 179, 89);
+        let south = viewer_texture_pixel_center_to_alt_az(360, 180, 269, 89);
+
+        assert!((north.altitude_deg - 0.5).abs() < 1e-9);
+        assert!((east.azimuth_deg - 89.5).abs() < 1e-9);
+        assert!((north.azimuth_deg - 0.5).abs() < 1e-9);
+        assert!((west.azimuth_deg - 270.5).abs() < 1e-9);
+        assert!((south.azimuth_deg - 180.5).abs() < 1e-9);
     }
 
     #[test]

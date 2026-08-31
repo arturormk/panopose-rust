@@ -114,6 +114,10 @@ a {
   font-size: 13px;
 }
 
+.switch-field[hidden] {
+  display: none;
+}
+
 .switch-field input {
   position: absolute;
   inset: 0;

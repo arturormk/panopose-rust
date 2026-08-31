@@ -204,8 +204,9 @@ select_build_packages() {
     Linux)
       info
       info "Choose final packages to build."
-      info "  Available: deb, rpm, appimage, all, none"
-      selection="$(prompt "Packages" "$default_selection")"
+      print_linux_package_menu "$default_selection"
+      selection="$(prompt "Selection" "$(linux_package_default_choice "$default_selection")")"
+      selection="$(linux_package_selection_from_menu_choice "$selection")"
       ;;
     *)
       selection="$(prompt "Packages to build, or none" "$default_selection")"
@@ -213,6 +214,48 @@ select_build_packages() {
   esac
 
   normalize_package_selection "$selection"
+}
+
+print_linux_package_menu() {
+  local default_selection="$1"
+  local default_choice
+
+  default_choice="$(linux_package_default_choice "$default_selection")"
+  info "  1) deb"
+  info "  2) rpm"
+  info "  3) appimage"
+  info "  4) deb,rpm"
+  info "  5) all"
+  info "  6) none"
+  info "Default: $default_choice) $default_selection"
+}
+
+linux_package_default_choice() {
+  case "$1" in
+    deb) printf '1' ;;
+    rpm) printf '2' ;;
+    appimage) printf '3' ;;
+    deb,rpm|rpm,deb) printf '4' ;;
+    deb,rpm,appimage|all) printf '5' ;;
+    none|"") printf '6' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+linux_package_selection_from_menu_choice() {
+  local selection="$1"
+
+  selection="${selection,,}"
+  selection="${selection// /}"
+  case "$selection" in
+    1) printf 'deb' ;;
+    2) printf 'rpm' ;;
+    3) printf 'appimage' ;;
+    4) printf 'deb,rpm' ;;
+    5) printf 'all' ;;
+    6) printf 'none' ;;
+    *) printf '%s' "$selection" ;;
+  esac
 }
 
 normalize_package_selection() {

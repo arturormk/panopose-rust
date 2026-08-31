@@ -86,13 +86,8 @@ interface ExportProgress {
   total_rows: number;
 }
 
-interface SkyRemovalSettings {
-  sensitivity: number;
-}
-
 interface SkyPreviewCacheKey {
   path: string;
-  sensitivity: number;
   pose: Pose;
 }
 
@@ -170,7 +165,7 @@ const state = {
   } satisfies CaptureTimeState,
   skyRemoval: {
     enabled: false,
-    sensitivity: 0.55,
+    available: false,
     previewRequestId: 0,
   },
 };
@@ -202,15 +197,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </label>
         <button id="use-reference-time-for-capture" class="button secondary" type="button">Use Reference Time</button>
         <div class="metadata-source" id="capture-time-source">Capture time: default</div>
-        <label class="switch-field">
+        <label class="switch-field" id="remove-sky-field" hidden>
           <span>Remove Sky</span>
           <input id="remove-sky" type="checkbox" />
           <span class="switch-track" aria-hidden="true">
             <span class="switch-thumb"></span>
           </span>
-        </label>
-        <label class="field">Sky sensitivity
-          <input id="sky-sensitivity" type="range" min="-1" max="1" step="0.01" value="0.55" />
         </label>
       </section>
 
@@ -437,10 +429,6 @@ document.querySelector("#remove-sky")!.addEventListener("change", (event) => {
   state.skyRemoval.enabled = (event.target as HTMLInputElement).checked;
   void applySkyPreview();
 });
-document.querySelector("#sky-sensitivity")!.addEventListener("input", (event) => {
-  state.skyRemoval.sensitivity = Number((event.target as HTMLInputElement).value);
-  scheduleSkyPreview();
-});
 document.querySelector("#compare-blend")!.addEventListener("click", () => setComparisonMode("blend"));
 document.querySelector("#compare-target")!.addEventListener("click", () => setComparisonMode("target"));
 document.querySelector("#compare-reference")!.addEventListener("click", () => setComparisonMode("reference"));
@@ -537,6 +525,7 @@ resize();
 updateGridForZoom();
 syncCaptureTimeInputs();
 void loadAppVersion();
+void loadSkysegAvailability();
 animate();
 
 async function loadAppVersion(): Promise<void> {
@@ -550,12 +539,24 @@ async function loadAppVersion(): Promise<void> {
   }
 }
 
+async function loadSkysegAvailability(): Promise<void> {
+  const available = await invoke<boolean>("skyseg_available").catch(() => false);
+  state.skyRemoval.available = available;
+  const field = document.querySelector<HTMLLabelElement>("#remove-sky-field")!;
+  field.hidden = !available;
+  if (!available) {
+    state.skyRemoval.enabled = false;
+    document.querySelector<HTMLInputElement>("#remove-sky")!.checked = false;
+  }
+}
+
 function applyPose(): void {
   const target = getTargetLayer();
   if (target) {
     target.pose = { ...state.pose };
     applyLayerPose(target);
-    if (state.skyRemoval.enabled) {
+    if (state.skyRemoval.enabled && state.skyRemoval.available) {
+      setTargetTexture(target, target.texture);
       scheduleSkyPreview();
     }
   }
@@ -1358,16 +1359,9 @@ function setOpenedImagePath(path: string): void {
   updateReadout();
 }
 
-function currentSkyRemovalSettings(): SkyRemovalSettings {
-  return {
-    sensitivity: state.skyRemoval.sensitivity,
-  };
-}
-
 function currentSkyPreviewCacheKey(target: ImageLayer): SkyPreviewCacheKey {
   return {
     path: target.path,
-    sensitivity: state.skyRemoval.sensitivity,
     pose: { ...state.pose },
   };
 }
@@ -1377,7 +1371,6 @@ function skyPreviewCacheMatches(layer: ImageLayer, cacheKey: SkyPreviewCacheKey)
   return (
     cached !== null &&
     cached.path === cacheKey.path &&
-    cached.sensitivity === cacheKey.sensitivity &&
     cached.pose.yaw === cacheKey.pose.yaw &&
     cached.pose.pitch === cacheKey.pose.pitch &&
     cached.pose.roll === cacheKey.pose.roll
@@ -1400,7 +1393,7 @@ async function applySkyPreview(): Promise<void> {
   const requestId = state.skyRemoval.previewRequestId;
   if (!target) return;
 
-  if (!state.skyRemoval.enabled) {
+  if (!state.skyRemoval.enabled || !state.skyRemoval.available) {
     setTargetTexture(target, target.texture);
     document.querySelector("#image-status")!.textContent = `${target.dimensions.width}x${target.dimensions.height}`;
     return;
@@ -1418,8 +1411,10 @@ async function applySkyPreview(): Promise<void> {
     const bytes = await invoke<number[]>("preview_sky_removed_image", {
       request: {
         input: target.path,
-        settings: currentSkyRemovalSettings(),
         max_width: 4096,
+        yaw_deg: state.pose.yaw,
+        pitch_deg: state.pose.pitch,
+        roll_deg: state.pose.roll,
       },
     });
     if (requestId !== state.skyRemoval.previewRequestId || !state.skyRemoval.enabled) return;
@@ -1451,6 +1446,7 @@ async function applySkyPreview(): Promise<void> {
 function setTargetTexture(layer: ImageLayer, texture: THREE.Texture): void {
   layer.material.map = texture;
   layer.material.needsUpdate = true;
+  applyLayerPose(layer);
 }
 
 function disposeSkyPreview(layer: ImageLayer): void {
@@ -1507,7 +1503,7 @@ async function exportCurrentTargetImage(): Promise<void> {
           yaw_deg: state.pose.yaw,
           pitch_deg: state.pose.pitch,
           roll_deg: state.pose.roll,
-          sky_removal: state.skyRemoval.enabled ? currentSkyRemovalSettings() : null,
+          sky_removal: state.skyRemoval.enabled && state.skyRemoval.available,
         },
       });
     } finally {
@@ -1563,7 +1559,7 @@ async function exportCurrentTargetStellariumZip(): Promise<void> {
           yaw_deg: state.pose.yaw,
           pitch_deg: state.pose.pitch,
           roll_deg: state.pose.roll,
-          sky_removal: state.skyRemoval.enabled ? currentSkyRemovalSettings() : null,
+          sky_removal: state.skyRemoval.enabled && state.skyRemoval.available,
           latitude_deg: latitude,
           longitude_deg: longitude,
           elevation_m: elevation,
@@ -1618,8 +1614,6 @@ async function chooseStellariumExportDetails(target: ImageLayer): Promise<Stella
       modal.hidden = true;
       exportButton.removeEventListener("click", submit);
       cancelButton.removeEventListener("click", cancel);
-      modal.removeEventListener("click", backdropCancel);
-      document.removeEventListener("keydown", escapeCancel);
       resolve(details);
     };
 
@@ -1642,17 +1636,9 @@ async function chooseStellariumExportDetails(target: ImageLayer): Promise<Stella
     };
 
     const cancel = () => finish(null);
-    const backdropCancel = (event: MouseEvent) => {
-      if (event.target === modal) finish(null);
-    };
-    const escapeCancel = (event: KeyboardEvent) => {
-      if (event.key === "Escape") finish(null);
-    };
 
     exportButton.addEventListener("click", submit);
     cancelButton.addEventListener("click", cancel);
-    modal.addEventListener("click", backdropCancel);
-    document.addEventListener("keydown", escapeCancel);
     modal.hidden = false;
     nameInput.focus();
   });
@@ -1718,8 +1704,8 @@ async function confirmStellariumOverwrite(targetPath: string): Promise<boolean> 
 function showExportProgress(targetPath: string, width: number, height: number, outputKind = "panorama"): void {
   const modal = document.querySelector<HTMLDivElement>("#export-progress-modal")!;
   const message = document.querySelector<HTMLDivElement>("#export-progress-message")!;
-  message.textContent = state.skyRemoval.enabled
-    ? `Detecting sky, then exporting ${outputKind} to ${targetPath} at ${width} x ${height}`
+  message.textContent = state.skyRemoval.enabled && state.skyRemoval.available
+    ? `Exporting ${outputKind}, then removing sky with skyseg-ncnn to ${targetPath} at ${width} x ${height}`
     : `Exporting ${outputKind} to ${targetPath} at ${width} x ${height}`;
   updateExportProgress(0, height);
   modal.hidden = false;
