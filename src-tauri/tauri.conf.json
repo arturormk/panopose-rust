@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PanoPose",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "dev.panopose.app",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix ../frontend",
-    "beforeBuildCommand": "npm run build --prefix ../frontend",
+    "beforeDevCommand": "npm run dev --prefix frontend",
+    "beforeBuildCommand": "npm run build --prefix frontend",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../frontend/dist"
   },

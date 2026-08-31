@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "panopose"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "image",
@@ -2449,7 +2449,7 @@ dependencies = [
 
 [[package]]
 name = "panopose-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "panopose-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "astronomy-engine-bindings",
  "chrono",

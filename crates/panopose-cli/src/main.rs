@@ -10,7 +10,7 @@ use panopose_core::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "panopose", author, version = APP_VERSION, about)]
+#[command(name = "panopose-cli", author, version = APP_VERSION, about)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
