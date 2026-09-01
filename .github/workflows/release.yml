@@ -43,6 +43,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 
+      - name: Build CLI sidecar
+        run: |
+          target_triple="$(rustc -vV | awk '/^host: / {print $2}')"
+          cargo build -p panopose-cli --release
+          install -Dm755 "target/release/panopose-cli" "src-tauri/binaries/panopose-cli-${target_triple}"
+
       - name: Build and upload Tauri packages
         uses: tauri-apps/tauri-action@v1
         env:
