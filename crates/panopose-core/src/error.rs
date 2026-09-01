@@ -9,6 +9,11 @@ pub enum PanoposeError {
     )]
     InvalidEquirectangularDimensions { width: u32, height: u32 },
 
+    #[error(
+        "nadir overlay radius must be greater than 0 and no more than 90 degrees: {radius_deg}"
+    )]
+    InvalidNadirOverlayRadius { radius_deg: f64 },
+
     #[error("image error: {0}")]
     Image(#[from] image::ImageError),
 

@@ -98,6 +98,12 @@ a {
   color: #f1f4f8;
 }
 
+.field input:disabled,
+.field select:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
 .switch-field {
   position: relative;
   display: flex;

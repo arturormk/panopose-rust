@@ -40,6 +40,11 @@ The final implementation separates the responsibilities:
 - Maintain a test that the final export raster flip is applied exactly once.
 - When export and preview disagree, test the center ray numerically before changing yaw offsets.
 
+## Follow-up: Nadir Cap
+Date: 2026-09-01
+
+The nadir-cap preview uses viewer texture space, while exported PNG and Stellarium rasters use the finalized South-centered export presentation. The export path therefore applies the cap after final rasterization and samples the cap texture in the saved-raster convention, including the required 180° texture rotation so the label reads upright when looking South.
+
 ## References
 - Commit:
 - ADR:

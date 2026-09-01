@@ -3,7 +3,9 @@ set -Eeuo pipefail
 
 readonly FRONTEND_DIR="frontend"
 readonly APP_NAME="PanoPose"
-readonly APP_ID="dev.panopose.app"
+readonly APP_ID="dev.panopose.desktop"
+readonly CLI_BIN_NAME="panopose-cli"
+readonly SIDECAR_DIR="src-tauri/binaries"
 readonly APPIMAGE_INSTALL_DIR="$HOME/.local/bin"
 readonly DESKTOP_INSTALL_DIR="$HOME/.local/share/applications"
 
@@ -155,16 +157,39 @@ build_release() {
   local bundle_args=()
 
   select_build_packages
+  build_cli_utility
 
   info "Building $APP_NAME release for the current platform"
   if ((NO_BUNDLE)); then
-    info "Package selection: none; building release executable only"
+    info "Package selection: none; building release executables only"
     cargo tauri build --ci --no-bundle
   else
     info "Package selection: $PACKAGE_SELECTION"
     bundle_args=(--bundles "$PACKAGE_SELECTION")
     cargo tauri build --ci "${bundle_args[@]}"
   fi
+}
+
+rust_host_triple() {
+  rustc -vV | awk '/^host: / {print $2}'
+}
+
+build_cli_utility() {
+  local target_triple source_binary staged_binary
+
+  target_triple="$(rust_host_triple)"
+  [[ -n "$target_triple" ]] || die "could not determine Rust host target triple."
+
+  info "Building $CLI_BIN_NAME utility"
+  cargo build -p "$CLI_BIN_NAME" --release
+
+  source_binary="target/release/$CLI_BIN_NAME"
+  [[ -f "$source_binary" ]] || die "$source_binary was not produced."
+
+  mkdir -p "$SIDECAR_DIR"
+  staged_binary="$SIDECAR_DIR/$CLI_BIN_NAME-$target_triple"
+  cp "$source_binary" "$staged_binary"
+  chmod +x "$staged_binary"
 }
 
 default_package_selection() {
@@ -358,6 +383,16 @@ find_release_executable() {
   printf '%s\n' "${roots[@]}" | head -n 1
 }
 
+find_cli_executable() {
+  local roots=()
+
+  [[ -f target/release/$CLI_BIN_NAME ]] && roots+=(target/release/$CLI_BIN_NAME)
+  [[ -f src-tauri/target/release/$CLI_BIN_NAME ]] && roots+=(src-tauri/target/release/$CLI_BIN_NAME)
+  ((${#roots[@]})) || return 0
+
+  printf '%s\n' "${roots[@]}" | head -n 1
+}
+
 abs_path() {
   local path="$1"
   case "$path" in
@@ -407,16 +442,24 @@ print_package_artifacts() {
 }
 
 print_build_outputs() {
-  local executable
+  local executable cli_executable
 
   info
   info "Build outputs"
   executable="$(find_release_executable)"
   if [[ -n "$executable" ]]; then
-    info "  Executable:"
+    info "  App executable:"
     info "    $(abs_path "$executable")"
   else
-    warn "release executable was not found."
+    warn "release app executable was not found."
+  fi
+
+  cli_executable="$(find_cli_executable)"
+  if [[ -n "$cli_executable" ]]; then
+    info "  CLI executable:"
+    info "    $(abs_path "$cli_executable")"
+  else
+    warn "$CLI_BIN_NAME release executable was not found."
   fi
 
   info "  Final packages:"

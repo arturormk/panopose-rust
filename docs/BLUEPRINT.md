@@ -60,12 +60,15 @@ As of the current implementation, PanoPose is a working Tauri + Rust + TypeScrip
 * reference panorama layers with opacity, target-only, reference-only, blend, and blink comparison modes;
 * a zoom-dependent Alt/Az grid;
 * EXIF/XMP metadata reading for time, timezone offset, GPS position, elevation, GPano pose, and PanoPose metadata;
+* site fields that stay blank when no geolocation metadata is found, with latitude/longitude entry accepting decimal point or decimal comma input and imported coordinates rounded to five decimal places;
+* site-dependent astronomy controls that are hidden and disabled until latitude and longitude are present, then refreshed automatically when the user completes the fields, with blank elevation treated as 0 m for astronomy calculations;
 * metadata-only import from ordinary image files for reference time and/or site;
 * session-only remembered image directory for image-open dialogs;
-* metadata writing via `exiftool`, including PanoPose JSON and GPano orientation tags;
+* metadata writing via `exiftool`, including PanoPose JSON, GPano orientation tags, site/capture-time fields, and nadir-cap settings;
 * PNG export of the currently oriented target panorama at original target resolution;
 * export centered on South/180° azimuth with the horizon vertically centered;
 * export overwrite confirmation and a modal progress bar driven by backend row-progress events;
+* an optional branded black nadir cap at altitude -90° with interactive radius preview and PNG/Stellarium export burn-in;
 * automatic, non-destructive sky-removal preview for the target panorama;
 * cached sky-removal preview reuse while the target image and alignment angles are unchanged;
 * `skyseg-ncnn`-based sky removal when the external executable is available on `PATH`;
@@ -201,6 +204,10 @@ For example:
 * `Align Target`
 
 The exact UI is open to experimentation, but accidental modification of a calibrated panorama while merely trying to look around should be difficult.
+
+Current implementation note:
+
+* `Align Target` dragging moves the panorama in the same direction as the pointer, including vertical drag for roll/horizon-tilt adjustment.
 
 Undo/redo should apply to pose adjustments.
 
@@ -485,8 +492,13 @@ and optionally the corresponding UTC instant.
 Current implementation note:
 
 * target panorama loading applies useful EXIF/XMP metadata automatically and initializes a separate panorama capture-time field;
+* imported latitude and longitude values are rounded to five decimal places before display;
+* latitude, longitude, and elevation fields stay blank when the loaded image has no site metadata;
+* latitude and longitude text fields accept either decimal point or decimal comma input;
+* opening a target without latitude/longitude metadata shows a warning and disables site-dependent astronomy controls;
 * `Load EXIF from Image` allows importing reference time, site, or both from an ordinary photo without adding that photo as a layer;
 * saving writes EXIF capture-time tags from the panorama capture-time field, not from externally imported reference time unless the user deliberately copies it;
+* metadata saving deletes EXIF GPS tags when latitude or longitude is blank, but can write EXIF GPS latitude/longitude without GPS altitude when elevation is blank;
 * if the imported time implies that the Sun is below the horizon, PanoPose enables Planetarium mode automatically.
 
 ---
@@ -889,6 +901,7 @@ Current implementation:
 * `Export Pano As` exports the current target as PNG only, preserving the target image's original dimensions;
 * South/180° is the fixed export center in the UI;
 * `Export Stellarium ZIP` bakes the current target pose into the texture and keeps Stellarium's `angle_rotatez` at the fixed spherical-texture convention;
+* an optional `Nadir Cap` toggle burns a black branded cap into `Export Pano As` and `Export Stellarium ZIP` output after final raster orientation, with text readable upright when looking South;
 * existing output files require confirmation before overwrite;
 * export runs in Rust on Tauri's blocking thread pool and reports progress by completed output rows.
 
@@ -1063,6 +1076,20 @@ Current implementation:
 
 ---
 
+# 36.1. Nadir cap
+
+The user may need to hide a tripod, monopod, or stitching artifact at the nadir.
+
+Current implementation:
+
+* `Nadir Cap` is an optional panorama setting with a live spherical preview;
+* the radius spinner controls how many degrees away from altitude -90° the cap extends, from 1° to 45°;
+* the cap is a black circular overlay with the PanoPose icon centered on the nadir and `Pano` / `Pose` text on either side;
+* `Export Pano As` and `Export Stellarium ZIP` burn the cap into the exported pixels;
+* `Save As` stores the enabled state and radius in PanoPose metadata but does not render the cap, remap the panorama, or transcode pixels.
+
+---
+
 # 37. Project file
 
 PanoPose should use a non-destructive project format, probably JSON or another readable structured format.
@@ -1187,8 +1214,8 @@ Current behavior:
 * offers to install `cargo-tauri` if it is missing;
 * installs frontend dependencies with `npm ci --prefix frontend`;
 * asks which final packages to build using a numbered menu, unless `--bundles` or `--no-bundle` is provided;
-* builds a current-platform Tauri release with `cargo tauri build --ci`;
-* lists generated bundle artifacts and the release executable path;
+* builds the `panopose-cli` release utility and a current-platform Tauri release with `cargo tauri build --ci`;
+* lists generated bundle artifacts and the release executable paths;
 * offers to install the preferred package where supported.
 
 The Tauri bundle uses `src-tauri/icons/icon.png` as the release icon. The icon should remain a square RGBA PNG; the current asset is 512x512.
@@ -1199,7 +1226,7 @@ On Linux, install preference is:
 * `.rpm` via `sudo rpm -Uvh`;
 * `.AppImage` copied to `~/.local/bin/panopose.AppImage` with a desktop entry under `~/.local/share/applications`.
 
-The Linux package prompt shows numbered options for `deb`, `rpm`, `appimage`, `deb,rpm`, `all`, or `none`, while still accepting typed names and comma-separated combinations. If app installation is skipped or declined, the script prints absolute paths for the release executable and the requested final package files.
+The Linux package prompt shows numbered options for `deb`, `rpm`, `appimage`, `deb,rpm`, `all`, or `none`, while still accepting typed names and comma-separated combinations. Linux `.deb` and `.rpm` packages include both `panopose` and `panopose-cli` under `/usr/bin`. If app installation is skipped or declined, the script prints absolute paths for the release executables and the requested final package files.
 
 AppImage generation depends on Tauri's linuxdeploy/AppImage tooling and the host's AppImage/FUSE compatibility. The script may still leave usable `.deb` or `.rpm` artifacts when AppImage packaging fails on a constrained host.
 

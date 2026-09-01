@@ -3,7 +3,7 @@ import exifr from "exifr";
 import * as THREE from "three";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open, save } from "@tauri-apps/plugin-dialog";
 
 type Mode = "navigate" | "align";
 type LayerKind = "target" | "reference";
@@ -78,12 +78,24 @@ interface ImageMetadataResult {
   longitude: number | null;
   elevation: number | null;
   pose: Partial<Pose> | null;
+  nadirOverlay: Partial<NadirOverlayState> | null;
   timezone: string | null;
 }
 
 interface ExportProgress {
   completed_rows: number;
   total_rows: number;
+}
+
+interface NadirOverlayState {
+  enabled: boolean;
+  radiusDeg: number;
+}
+
+interface NadirOverlayRequest {
+  enabled: boolean;
+  radius_deg: number;
+  texture_png: number[];
 }
 
 interface SkyPreviewCacheKey {
@@ -104,6 +116,8 @@ interface PanoposeMetadata {
   yaw_deg: number | null;
   pitch_deg: number | null;
   roll_deg: number | null;
+  nadir_cap_enabled: boolean | null;
+  nadir_cap_radius_deg: number | null;
   latitude_deg: number | null;
   longitude_deg: number | null;
   elevation_m: number | null;
@@ -144,6 +158,11 @@ const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
 const MAX_IMAGE_LAYERS = 4;
 const BLINK_INTERVAL_MS = 550;
 const DEFAULT_POSE: Pose = { yaw: 0, pitch: 0, roll: 0 };
+const DEFAULT_NADIR_RADIUS_DEG = 12;
+const MIN_NADIR_RADIUS_DEG = 1;
+const MAX_NADIR_RADIUS_DEG = 45;
+const NADIR_CAP_TEXTURE_SIZE = 512;
+const PANOPOSE_ICON_URL = "/panopose-icon.png";
 
 const state = {
   mode: "navigate" as Mode,
@@ -168,6 +187,10 @@ const state = {
     available: false,
     previewRequestId: 0,
   },
+  nadirOverlay: {
+    enabled: false,
+    radiusDeg: DEFAULT_NADIR_RADIUS_DEG,
+  } as NadirOverlayState,
 };
 
 const PANORAMA_BASE_YAW_DEG = -90;
@@ -203,6 +226,16 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <span class="switch-track" aria-hidden="true">
             <span class="switch-thumb"></span>
           </span>
+        </label>
+        <label class="switch-field">
+          <span>Nadir Cap</span>
+          <input id="nadir-overlay-enabled" type="checkbox" />
+          <span class="switch-track" aria-hidden="true">
+            <span class="switch-thumb"></span>
+          </span>
+        </label>
+        <label class="field">Nadir Radius
+          <input id="nadir-overlay-radius" type="number" min="1" max="45" step="0.5" value="${DEFAULT_NADIR_RADIUS_DEG}" disabled />
         </label>
       </section>
 
@@ -277,14 +310,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
       <section class="panel">
         <h2>Site & Time</h2>
-        <label class="field">Latitude
-          <input id="latitude" type="number" step="0.000001" value="40.4168" />
+        <label class="field">Latitude (decimal deg)
+          <input id="latitude" type="text" inputmode="decimal" placeholder="40.4168 or 40,4168" />
         </label>
-        <label class="field">Longitude
-          <input id="longitude" type="number" step="0.000001" value="-3.7038" />
+        <label class="field">Longitude (decimal deg)
+          <input id="longitude" type="text" inputmode="decimal" placeholder="-3.7038 or -3,7038" />
         </label>
         <label class="field">Elevation m
-          <input id="elevation" type="number" step="1" value="667" />
+          <input id="elevation" type="text" inputmode="decimal" />
         </label>
         <label class="field">Reference time
           <input id="time" type="datetime-local" value="2026-08-29T18:37" />
@@ -302,7 +335,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <option value="Australia/Sydney"></option>
         </datalist>
         <button id="load-exif-metadata" class="button" type="button">Load EXIF from Image</button>
-        <label class="switch-field">
+        <label id="planetarium-mode-field" class="switch-field">
           <span>Planetarium</span>
           <input id="planetarium-mode" type="checkbox" />
           <span class="switch-track" aria-hidden="true">
@@ -311,7 +344,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </label>
         <button id="refresh-astro" class="button" type="button">Refresh Markers</button>
       </section>
-      <div class="app-version" id="app-version">v0.1.0</div>
+      <div class="app-version" id="app-version">v1.2</div>
     </aside>
     <section class="viewer">
       <canvas id="viewer-canvas"></canvas>
@@ -402,9 +435,13 @@ let dragging = false;
 let lastX = 0;
 let lastY = 0;
 let cursorAltAz: AltAzReadout | null = null;
+let siteRefreshTimer: number | null = null;
 let activeGridSpacingDeg = 0;
 let blinkTimer: number | null = null;
 let skyPreviewTimer: number | null = null;
+let nadirCapMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial> | null = null;
+let nadirCapTexture: THREE.CanvasTexture | null = null;
+let nadirPreviewRequestId = 0;
 
 function setMode(mode: Mode): void {
   state.mode = mode;
@@ -429,6 +466,19 @@ document.querySelector("#remove-sky")!.addEventListener("change", (event) => {
   state.skyRemoval.enabled = (event.target as HTMLInputElement).checked;
   void applySkyPreview();
 });
+document.querySelector("#nadir-overlay-enabled")!.addEventListener("change", (event) => {
+  state.nadirOverlay.enabled = (event.target as HTMLInputElement).checked;
+  syncNadirOverlayControls();
+  void updateNadirOverlayPreview();
+  updateReadout();
+});
+document.querySelector("#nadir-overlay-radius")!.addEventListener("input", (event) => {
+  const input = event.target as HTMLInputElement;
+  state.nadirOverlay.radiusDeg = clampNadirRadius(Number(input.value));
+  input.value = formatNadirRadius(state.nadirOverlay.radiusDeg);
+  void updateNadirOverlayPreview();
+  updateReadout();
+});
 document.querySelector("#compare-blend")!.addEventListener("click", () => setComparisonMode("blend"));
 document.querySelector("#compare-target")!.addEventListener("click", () => setComparisonMode("target"));
 document.querySelector("#compare-reference")!.addEventListener("click", () => setComparisonMode("reference"));
@@ -443,6 +493,10 @@ for (const id of ["yaw", "pitch", "roll"] as const) {
   });
 }
 
+for (const id of ["latitude", "longitude", "elevation"] as const) {
+  document.querySelector<HTMLInputElement>(`#${id}`)!.addEventListener("input", handleSiteInputChange);
+}
+
 document.querySelector<HTMLSelectElement>("#step")!.addEventListener("change", (event) => {
   state.step = Number((event.target as HTMLSelectElement).value);
   syncStepInputs();
@@ -455,6 +509,13 @@ document.querySelector("#planetarium-mode")!.addEventListener("change", (event) 
     state.starMarkers = [];
     drawStars();
     updateReadout();
+    return;
+  }
+  if (!hasCompleteSiteInputs()) {
+    state.planetariumMode = false;
+    (event.target as HTMLInputElement).checked = false;
+    alert("Planetarium mode requires latitude and longitude.");
+    updateSiteDependentControls();
     return;
   }
   void refreshAstronomy();
@@ -490,7 +551,7 @@ canvas.addEventListener("pointermove", (event) => {
   } else {
     const dragScale = navigationDragScale();
     state.pose.yaw -= THREE.MathUtils.radToDeg(dx * dragScale.horizontalRadiansPerPixel);
-    state.pose.roll += THREE.MathUtils.radToDeg(dy * dragScale.verticalRadiansPerPixel);
+    state.pose.roll -= THREE.MathUtils.radToDeg(dy * dragScale.verticalRadiansPerPixel);
     syncPoseInputs();
     applyPose();
   }
@@ -518,12 +579,15 @@ canvas.addEventListener("wheel", (event) => {
 
 window.addEventListener("resize", resize);
 syncStepInputs();
+syncNadirOverlayControls();
+void updateNadirOverlayPreview();
 applyPose();
 renderLayerList();
 updateLayerRendering();
 resize();
 updateGridForZoom();
 syncCaptureTimeInputs();
+updateSiteDependentControls();
 void loadAppVersion();
 void loadSkysegAvailability();
 animate();
@@ -535,7 +599,7 @@ async function loadAppVersion(): Promise<void> {
   try {
     versionElement.textContent = await invoke<string>("app_version");
   } catch {
-    versionElement.textContent = "v0.1.0";
+    versionElement.textContent = "v1.2";
   }
 }
 
@@ -573,6 +637,162 @@ function syncStepInputs(): void {
   for (const id of ["yaw", "pitch", "roll"] as const) {
     document.querySelector<HTMLInputElement>(`#${id}`)!.step = String(state.step);
   }
+}
+
+function syncNadirOverlayControls(): void {
+  const enabledInput = document.querySelector<HTMLInputElement>("#nadir-overlay-enabled")!;
+  const radiusInput = document.querySelector<HTMLInputElement>("#nadir-overlay-radius")!;
+  enabledInput.checked = state.nadirOverlay.enabled;
+  radiusInput.disabled = !state.nadirOverlay.enabled;
+  radiusInput.value = formatNadirRadius(state.nadirOverlay.radiusDeg);
+}
+
+function clampNadirRadius(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_NADIR_RADIUS_DEG;
+  return THREE.MathUtils.clamp(value, MIN_NADIR_RADIUS_DEG, MAX_NADIR_RADIUS_DEG);
+}
+
+function formatNadirRadius(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+async function updateNadirOverlayPreview(): Promise<void> {
+  const requestId = ++nadirPreviewRequestId;
+  if (nadirCapMesh) {
+    scene.remove(nadirCapMesh);
+    nadirCapMesh.geometry.dispose();
+    nadirCapMesh.material.dispose();
+    nadirCapMesh = null;
+  }
+  if (nadirCapTexture) {
+    nadirCapTexture.dispose();
+    nadirCapTexture = null;
+  }
+
+  if (!state.nadirOverlay.enabled) {
+    return;
+  }
+
+  const radiusDeg = state.nadirOverlay.radiusDeg;
+  const artwork = await createNadirCapCanvas();
+  if (requestId !== nadirPreviewRequestId || !state.nadirOverlay.enabled) {
+    return;
+  }
+  nadirCapTexture = new THREE.CanvasTexture(artwork);
+  nadirCapTexture.colorSpace = THREE.SRGBColorSpace;
+
+  const material = new THREE.MeshBasicMaterial({
+    map: nadirCapTexture,
+    side: THREE.DoubleSide,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  nadirCapMesh = new THREE.Mesh(createNadirCapGeometry(radiusDeg), material);
+  nadirCapMesh.renderOrder = 130;
+  scene.add(nadirCapMesh);
+}
+
+function createNadirCapGeometry(radiusDeg: number): THREE.BufferGeometry {
+  const geometry = new THREE.BufferGeometry();
+  const radius = 496;
+  const ringSegments = 18;
+  const azimuthSegments = 128;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  for (let ring = 0; ring <= ringSegments; ring += 1) {
+    const radial = ring / ringSegments;
+    const altitude = THREE.MathUtils.degToRad(-90 + radiusDeg * radial);
+    const cosAlt = Math.cos(altitude);
+    for (let segment = 0; segment <= azimuthSegments; segment += 1) {
+      const azimuth = (segment / azimuthSegments) * Math.PI * 2;
+      positions.push(
+        Math.sin(azimuth) * cosAlt * radius,
+        Math.sin(altitude) * radius,
+        Math.cos(azimuth) * cosAlt * radius,
+      );
+      uvs.push(0.5 + Math.sin(azimuth) * radial * 0.5, 0.5 - Math.cos(azimuth) * radial * 0.5);
+    }
+  }
+
+  const rowSize = azimuthSegments + 1;
+  for (let ring = 0; ring < ringSegments; ring += 1) {
+    for (let segment = 0; segment < azimuthSegments; segment += 1) {
+      const a = ring * rowSize + segment;
+      const b = a + rowSize;
+      indices.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+
+  geometry.setIndex(indices);
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+async function createNadirCapCanvas(): Promise<HTMLCanvasElement> {
+  const canvas = document.createElement("canvas");
+  canvas.width = NADIR_CAP_TEXTURE_SIZE;
+  canvas.height = NADIR_CAP_TEXTURE_SIZE;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("2D canvas context is unavailable");
+  }
+
+  const center = NADIR_CAP_TEXTURE_SIZE / 2;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.beginPath();
+  context.arc(center, center, center - 2, 0, Math.PI * 2);
+  context.fillStyle = "#000000";
+  context.fill();
+
+  const icon = await loadPanoposeIcon();
+  const iconSize = 148;
+  context.drawImage(icon, center - iconSize / 2, center - iconSize / 2, iconSize, iconSize);
+
+  context.fillStyle = "#f1f4f8";
+  context.font = "700 48px Inter, system-ui, sans-serif";
+  context.textBaseline = "middle";
+  context.textAlign = "right";
+  context.fillText("Pano", center - 72, center);
+  context.textAlign = "left";
+  context.fillText("Pose", center + 72, center);
+
+  return canvas;
+}
+
+async function currentNadirOverlayRequest(): Promise<NadirOverlayRequest | null> {
+  if (!state.nadirOverlay.enabled) return null;
+  const canvas = await createNadirCapCanvas();
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((result) => {
+      if (result) {
+        resolve(result);
+      } else {
+        reject(new Error("Could not encode nadir cap artwork."));
+      }
+    }, "image/png");
+  });
+  return {
+    enabled: true,
+    radius_deg: state.nadirOverlay.radiusDeg,
+    texture_png: Array.from(new Uint8Array(await blob.arrayBuffer())),
+  };
+}
+
+let panoposeIconPromise: Promise<HTMLImageElement> | null = null;
+
+function loadPanoposeIcon(): Promise<HTMLImageElement> {
+  panoposeIconPromise ??= new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Could not load PanoPose icon."));
+    image.src = PANOPOSE_ICON_URL;
+  });
+  return panoposeIconPromise;
 }
 
 async function openTargetImage(): Promise<void> {
@@ -668,6 +888,7 @@ async function loadExifMetadataFromImage(): Promise<void> {
       time: choice === "time" || choice === "both",
       site: choice === "site" || choice === "both",
       pose: false,
+      nadirOverlay: false,
     });
     await refreshAstronomy();
     if (choice === "time" || choice === "both") {
@@ -680,7 +901,7 @@ async function loadExifMetadataFromImage(): Promise<void> {
 }
 
 async function loadTargetFromBlob(path: string, metadataSource: Blob): Promise<void> {
-  await applyTargetMetadataFromImage(metadataSource);
+  const metadata = await applyTargetMetadataFromImage(metadataSource);
   replaceLayer(
     await createImageLayer({
       kind: "target",
@@ -697,6 +918,12 @@ async function loadTargetFromBlob(path: string, metadataSource: Blob): Promise<v
   const target = getTargetLayer();
   if (target) {
     document.querySelector("#image-status")!.textContent = `${target.dimensions.width}x${target.dimensions.height}`;
+  }
+  if (!metadata || !hasSiteMetadata(metadata)) {
+    await message(
+      "This panorama does not contain latitude and longitude metadata. Site fields were left blank, and astronomy markers are disabled until latitude and longitude are entered. Elevation is optional and defaults to 0 m when blank.",
+      { title: "", kind: "warning" },
+    );
   }
   await applySkyPreview();
   await refreshAstronomy();
@@ -849,14 +1076,18 @@ function navigationDragScale(): { horizontalRadiansPerPixel: number; verticalRad
 }
 
 async function refreshAstronomy(): Promise<void> {
-  const latitude = Number(document.querySelector<HTMLInputElement>("#latitude")!.value);
-  const longitude = Number(document.querySelector<HTMLInputElement>("#longitude")!.value);
-  const elevation = Number(document.querySelector<HTMLInputElement>("#elevation")!.value);
-  const localTime = document.querySelector<HTMLInputElement>("#time")!.value;
-  const timezone = document.querySelector<HTMLInputElement>("#timezone")!.value.trim() || systemTimeZone;
   const objects: CelestialObject[] = ["sun", "moon", "venus", "mars", "jupiter", "saturn", "vega", "sirius"];
 
   try {
+    if (!hasCompleteSiteInputs()) {
+      updateSiteDependentControls();
+      return;
+    }
+    const latitude = readDecimalInput("#latitude", "latitude");
+    const longitude = readDecimalInput("#longitude", "longitude");
+    const elevation = readOptionalElevationForComputation();
+    const localTime = document.querySelector<HTMLInputElement>("#time")!.value;
+    const timezone = document.querySelector<HTMLInputElement>("#timezone")!.value.trim() || systemTimeZone;
     const isoTime = zonedLocalDateTimeToIso(localTime, timezone);
     state.markers = await invoke<CelestialMarker[]>("astronomy_markers", {
       request: {
@@ -877,16 +1108,28 @@ async function refreshAstronomy(): Promise<void> {
           },
         })
       : [];
-  } catch {
-    state.markers = approximateBrowserMarkers(objects);
-    state.starMarkers = [];
+  } catch (error) {
+    updateSiteDependentControls();
+    alert(`Could not refresh astronomy markers: ${String(error)}`);
+    return;
   }
   drawMarkers();
   drawStars();
   updateReadout();
 }
 
+function clearAstronomyOverlays(): void {
+  state.markers = [];
+  state.starMarkers = [];
+  drawMarkers();
+  drawStars();
+  updateReadout();
+}
+
 async function enablePlanetariumIfSunIsBelowHorizon(): Promise<void> {
+  if (!hasCompleteSiteInputs()) {
+    return;
+  }
   const sun = state.markers.find((marker) => marker.object === "sun");
   if (!sun || sun.alt_az.altitude_deg >= 0 || state.planetariumMode) return;
 
@@ -1077,20 +1320,29 @@ function escapeHtml(value: string): string {
   });
 }
 
-async function applyTargetMetadataFromImage(file: Blob): Promise<void> {
+async function applyTargetMetadataFromImage(file: Blob): Promise<ImageMetadataResult | null> {
   const metadata = await readImageMetadata(file);
   if (!metadata) {
+    clearSiteInputs();
     setCaptureTimeFromReference("No target EXIF time");
-    return;
+    updateSiteDependentControls();
+    return null;
   }
 
-  applyImageMetadata(metadata, { time: true, site: true, pose: true });
+  applyImageMetadata(metadata, { time: true, site: true, pose: true, nadirOverlay: true });
   setCaptureTimeFromMetadata(metadata, "Target EXIF");
+  return metadata;
+}
+
+function clearSiteInputs(): void {
+  document.querySelector<HTMLInputElement>("#latitude")!.value = "";
+  document.querySelector<HTMLInputElement>("#longitude")!.value = "";
+  document.querySelector<HTMLInputElement>("#elevation")!.value = "";
 }
 
 function applyImageMetadata(
   metadata: ImageMetadataResult,
-  options: { time: boolean; site: boolean; pose: boolean },
+  options: { time: boolean; site: boolean; pose: boolean; nadirOverlay: boolean },
 ): void {
   if (options.time && metadata.timestamp) {
     document.querySelector<HTMLInputElement>("#time")!.value = metadata.timestamp.localDateTime;
@@ -1101,21 +1353,27 @@ function applyImageMetadata(
   if (options.time && metadata.timezone) {
     document.querySelector<HTMLInputElement>("#timezone")!.value = metadata.timezone;
   }
-  if (options.site && metadata.latitude !== null) {
-    document.querySelector<HTMLInputElement>("#latitude")!.value = String(metadata.latitude);
+  if (options.site) {
+    document.querySelector<HTMLInputElement>("#latitude")!.value =
+      metadata.latitude === null ? "" : formatImportedCoordinate(metadata.latitude);
+    document.querySelector<HTMLInputElement>("#longitude")!.value =
+      metadata.longitude === null ? "" : formatImportedCoordinate(metadata.longitude);
+    document.querySelector<HTMLInputElement>("#elevation")!.value =
+      metadata.elevation === null ? "" : String(metadata.elevation);
   }
-  if (options.site && metadata.longitude !== null) {
-    document.querySelector<HTMLInputElement>("#longitude")!.value = String(metadata.longitude);
-  }
-  if (options.site && metadata.elevation !== null) {
-    document.querySelector<HTMLInputElement>("#elevation")!.value = String(metadata.elevation);
-  }
+  updateSiteDependentControls();
   if (options.pose && metadata.pose) {
     state.pose.yaw = metadata.pose.yaw ?? state.pose.yaw;
     state.pose.pitch = metadata.pose.pitch ?? state.pose.pitch;
     state.pose.roll = metadata.pose.roll ?? state.pose.roll;
     syncPoseInputs();
     applyPose();
+  }
+  if (options.nadirOverlay && metadata.nadirOverlay) {
+    state.nadirOverlay.enabled = metadata.nadirOverlay.enabled ?? state.nadirOverlay.enabled;
+    state.nadirOverlay.radiusDeg = clampNadirRadius(metadata.nadirOverlay.radiusDeg ?? state.nadirOverlay.radiusDeg);
+    syncNadirOverlayControls();
+    void updateNadirOverlayPreview();
   }
   updateReadout();
 }
@@ -1171,7 +1429,64 @@ function hasTimeMetadata(metadata: ImageMetadataResult): boolean {
 }
 
 function hasSiteMetadata(metadata: ImageMetadataResult): boolean {
-  return metadata.latitude !== null || metadata.longitude !== null || metadata.elevation !== null;
+  return metadata.latitude !== null && metadata.longitude !== null;
+}
+
+function hasCompleteSiteInputs(): boolean {
+  return (
+    readOptionalDecimalInput("#latitude", "latitude") !== null &&
+    readOptionalDecimalInput("#longitude", "longitude") !== null
+  );
+}
+
+function updateSiteDependentControls(): void {
+  const hasSite = hasCompleteSiteInputsSafely();
+
+  const planetariumField = document.querySelector<HTMLElement>("#planetarium-mode-field")!;
+  const planetariumInput = document.querySelector<HTMLInputElement>("#planetarium-mode")!;
+  const refreshButton = document.querySelector<HTMLButtonElement>("#refresh-astro")!;
+
+  planetariumField.hidden = !hasSite;
+  refreshButton.hidden = !hasSite;
+  planetariumInput.disabled = !hasSite;
+  refreshButton.disabled = !hasSite;
+
+  if (!hasSite) {
+    state.planetariumMode = false;
+    planetariumInput.checked = false;
+    clearAstronomyOverlays();
+  }
+}
+
+function handleSiteInputChange(): void {
+  updateSiteDependentControls();
+  if (!hasCompleteSiteInputsSafely()) {
+    cancelPendingSiteRefresh();
+    return;
+  }
+  scheduleAstronomyRefresh();
+}
+
+function hasCompleteSiteInputsSafely(): boolean {
+  try {
+    return hasCompleteSiteInputs();
+  } catch {
+    return false;
+  }
+}
+
+function scheduleAstronomyRefresh(): void {
+  cancelPendingSiteRefresh();
+  siteRefreshTimer = window.setTimeout(() => {
+    siteRefreshTimer = null;
+    void refreshAstronomy();
+  }, 250);
+}
+
+function cancelPendingSiteRefresh(): void {
+  if (siteRefreshTimer === null) return;
+  window.clearTimeout(siteRefreshTimer);
+  siteRefreshTimer = null;
 }
 
 function chooseMetadataImport(
@@ -1257,6 +1572,10 @@ function formatCoordinate(value: number): string {
   return value.toFixed(6);
 }
 
+function formatImportedCoordinate(value: number): string {
+  return value.toFixed(5);
+}
+
 async function readImageMetadata(file: Blob): Promise<ImageMetadataResult | null> {
   try {
     const tags = await exifr.parse(file, {
@@ -1272,7 +1591,9 @@ async function readImageMetadata(file: Blob): Promise<ImageMetadataResult | null
     const localDateTime = normalizeExifDateTime(rawDate);
     const rawOffset = tags.OffsetTimeOriginal ?? tags.OffsetTimeDigitized ?? tags.OffsetTime ?? null;
     const offset = normalizeExifOffset(rawOffset);
-    const panopose = parsePanoposeDescription(tags.Description ?? tags.ImageDescription);
+    const panopose = parsePanoposeDescription(
+      tags.Description ?? tags.description ?? tags.ImageDescription ?? tags.imageDescription,
+    );
     const gpano = parseGpanoPose(tags);
     const panoposeCaptureTime = normalizeExifDateTime(panopose?.capture_time);
     const panoposeCaptureOffset = normalizeIsoOffset(panopose?.capture_time);
@@ -1284,8 +1605,16 @@ async function readImageMetadata(file: Blob): Promise<ImageMetadataResult | null
 
     return {
       timestamp,
-      latitude: normalizeNumber(tags.GPSLatitude) ?? panopose?.latitude_deg ?? null,
-      longitude: normalizeNumber(tags.GPSLongitude) ?? panopose?.longitude_deg ?? null,
+      latitude:
+        normalizeNumber(tags.latitude) ??
+        normalizeGpsCoordinate(tags.GPSLatitude, tags.GPSLatitudeRef) ??
+        panopose?.latitude_deg ??
+        null,
+      longitude:
+        normalizeNumber(tags.longitude) ??
+        normalizeGpsCoordinate(tags.GPSLongitude, tags.GPSLongitudeRef) ??
+        panopose?.longitude_deg ??
+        null,
       elevation: normalizeGpsAltitude(tags.GPSAltitude, tags.GPSAltitudeRef) ?? panopose?.elevation_m ?? null,
       pose:
         gpano === null && panopose === null
@@ -1295,6 +1624,13 @@ async function readImageMetadata(file: Blob): Promise<ImageMetadataResult | null
               pitch: gpano?.roll_deg ?? panopose?.roll_deg ?? undefined,
               roll: gpano?.pitch_deg ?? panopose?.pitch_deg ?? undefined,
             },
+      nadirOverlay:
+        panopose && (panopose.nadir_cap_enabled !== null || panopose.nadir_cap_radius_deg !== null)
+          ? {
+              enabled: panopose.nadir_cap_enabled ?? undefined,
+              radiusDeg: panopose.nadir_cap_radius_deg ?? undefined,
+            }
+          : null,
       timezone: panopose?.timezone ?? null,
     };
   } catch {
@@ -1315,15 +1651,20 @@ function parseGpanoPose(tags: Record<string, unknown>): GpanoPoseMetadata | null
 }
 
 function parsePanoposeDescription(value: unknown): PanoposeMetadata | null {
+  if (typeof value === "object" && value !== null && "value" in value) {
+    value = (value as { value?: unknown }).value;
+  }
   if (typeof value !== "string") return null;
   try {
-    const parsed = JSON.parse(value) as { panopose?: Record<string, number | string> };
+    const parsed = JSON.parse(decodeHtmlEntities(value)) as { panopose?: Record<string, unknown> };
     const metadata = parsed.panopose;
     if (!metadata) return null;
     return {
       yaw_deg: normalizeNumber(metadata.yaw_deg),
       pitch_deg: normalizeNumber(metadata.pitch_deg),
       roll_deg: normalizeNumber(metadata.roll_deg),
+      nadir_cap_enabled: normalizeBoolean(metadata.nadir_cap_enabled),
+      nadir_cap_radius_deg: normalizeNumber(metadata.nadir_cap_radius_deg),
       latitude_deg: normalizeNumber(metadata.latitude_deg),
       longitude_deg: normalizeNumber(metadata.longitude_deg),
       elevation_m: normalizeNumber(metadata.elevation_m),
@@ -1336,13 +1677,84 @@ function parsePanoposeDescription(value: unknown): PanoposeMetadata | null {
   }
 }
 
-function normalizeNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function normalizeBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
   }
   return null;
+}
+
+function normalizeGpsCoordinate(value: unknown, ref: unknown): number | null {
+  const decimal = normalizeNumber(value);
+  if (decimal !== null) {
+    return gpsSign(ref) * decimal;
+  }
+  if (Array.isArray(value) && value.length >= 3) {
+    const degrees = normalizeNumber(value[0]);
+    const minutes = normalizeNumber(value[1]);
+    const seconds = normalizeNumber(value[2]);
+    if (degrees !== null && minutes !== null && seconds !== null) {
+      return gpsSign(ref) * (Math.abs(degrees) + minutes / 60 + seconds / 3600);
+    }
+  }
+  return null;
+}
+
+function gpsSign(ref: unknown): 1 | -1 {
+  return typeof ref === "string" && /^[SW]$/i.test(ref.trim()) ? -1 : 1;
+}
+
+function readDecimalInput(selector: string, label: string): number {
+  const rawValue = document.querySelector<HTMLInputElement>(selector)!.value;
+  const value = parseDecimalNumber(rawValue);
+  if (value === null) {
+    throw new Error(`Enter ${label} with a decimal point or decimal comma.`);
+  }
+  return value;
+}
+
+function readOptionalDecimalInput(selector: string, label: string): number | null {
+  const rawValue = document.querySelector<HTMLInputElement>(selector)!.value;
+  if (rawValue.trim() === "") return null;
+
+  const value = parseDecimalNumber(rawValue);
+  if (value === null) {
+    throw new Error(`Enter ${label} with a decimal point or decimal comma, or leave it blank.`);
+  }
+  return value;
+}
+
+function readOptionalElevationForComputation(): number {
+  return readOptionalDecimalInput("#elevation", "elevation") ?? 0;
+}
+
+function parseDecimalNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  const normalized = trimmed.includes(",") && !trimmed.includes(".") ? trimmed.replace(",", ".") : trimmed;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeNumber(value: unknown): number | null {
+  return parseDecimalNumber(value);
 }
 
 function normalizeGpsAltitude(value: unknown, ref: unknown): number | null {
@@ -1486,6 +1898,7 @@ async function exportCurrentTargetImage(): Promise<void> {
     const overwriteExisting = existingFile ? await confirmExportOverwrite(outputPath) : true;
     if (!overwriteExisting) return;
 
+    const nadirOverlay = await currentNadirOverlayRequest();
     let unlistenProgress: UnlistenFn | null = await listen<ExportProgress>("export-progress", (event) => {
       updateExportProgress(event.payload.completed_rows, event.payload.total_rows);
     });
@@ -1504,6 +1917,7 @@ async function exportCurrentTargetImage(): Promise<void> {
           pitch_deg: state.pose.pitch,
           roll_deg: state.pose.roll,
           sky_removal: state.skyRemoval.enabled && state.skyRemoval.available,
+          nadir_overlay: nadirOverlay,
         },
       });
     } finally {
@@ -1534,10 +1948,11 @@ async function exportCurrentTargetStellariumZip(): Promise<void> {
     const overwriteExisting = existingFile ? await confirmStellariumOverwrite(details.outputZip) : true;
     if (!overwriteExisting) return;
 
-    const latitude = Number(document.querySelector<HTMLInputElement>("#latitude")!.value);
-    const longitude = Number(document.querySelector<HTMLInputElement>("#longitude")!.value);
-    const elevation = Number(document.querySelector<HTMLInputElement>("#elevation")!.value);
+    const latitude = readDecimalInput("#latitude", "latitude");
+    const longitude = readDecimalInput("#longitude", "longitude");
+    const elevation = readOptionalElevationForComputation();
 
+    const nadirOverlay = await currentNadirOverlayRequest();
     let unlistenProgress: UnlistenFn | null = await listen<ExportProgress>("export-progress", (event) => {
       updateExportProgress(event.payload.completed_rows, event.payload.total_rows);
     });
@@ -1560,6 +1975,7 @@ async function exportCurrentTargetStellariumZip(): Promise<void> {
           pitch_deg: state.pose.pitch,
           roll_deg: state.pose.roll,
           sky_removal: state.skyRemoval.enabled && state.skyRemoval.available,
+          nadir_overlay: nadirOverlay,
           latitude_deg: latitude,
           longitude_deg: longitude,
           elevation_m: elevation,
@@ -1755,6 +2171,7 @@ async function saveMetadataAs(): Promise<void> {
     const existingFile = await invoke<boolean>("path_exists", { path: selected }).catch(() => false);
     const overwriteExisting = existingFile ? await confirmOverwrite(selected) : false;
     if (existingFile && !overwriteExisting) return;
+
     await writeMetadataToImage(selected, state.openedImagePath, overwriteExisting);
   } catch (error) {
     alert(`Could not save metadata: ${String(error)}`);
@@ -1783,9 +2200,9 @@ async function writeMetadataToImage(targetPath: string, sourcePath: string, over
   syncCaptureTimeStateFromInputs(state.captureTime.source);
   const referenceTimezone = document.querySelector<HTMLInputElement>("#timezone")!.value.trim() || systemTimeZone;
   const referenceLocalTime = document.querySelector<HTMLInputElement>("#time")!.value;
-  const latitude = Number(document.querySelector<HTMLInputElement>("#latitude")!.value);
-  const longitude = Number(document.querySelector<HTMLInputElement>("#longitude")!.value);
-  const elevation = Number(document.querySelector<HTMLInputElement>("#elevation")!.value);
+  const latitude = readOptionalDecimalInput("#latitude", "latitude");
+  const longitude = readOptionalDecimalInput("#longitude", "longitude");
+  const elevation = readOptionalDecimalInput("#elevation", "elevation");
   const referenceTime = zonedLocalDateTimeToIso(referenceLocalTime, referenceTimezone);
   const captureTime = zonedLocalDateTimeToIso(state.captureTime.localDateTime, state.captureTime.timezone);
 
@@ -1798,6 +2215,8 @@ async function writeMetadataToImage(targetPath: string, sourcePath: string, over
         yaw_deg: state.pose.yaw,
         pitch_deg: state.pose.roll,
         roll_deg: state.pose.pitch,
+        nadir_cap_enabled: state.nadirOverlay.enabled,
+        nadir_cap_radius_deg: state.nadirOverlay.radiusDeg,
         latitude_deg: latitude,
         longitude_deg: longitude,
         elevation_m: elevation,
@@ -1910,16 +2329,6 @@ function formatOffset(offsetMinutes: number): string {
 
 function pad(value: number, length: number): string {
   return String(value).padStart(length, "0");
-}
-
-function approximateBrowserMarkers(objects: CelestialObject[]): CelestialMarker[] {
-  return objects.map((object, index) => ({
-    object,
-    label: object,
-    alt_az: { altitude_deg: 15 + index * 4, azimuth_deg: index * 42 },
-    magnitude: null,
-    accuracy_note: "browser fallback marker",
-  }));
 }
 
 function updateGridForZoom(): void {

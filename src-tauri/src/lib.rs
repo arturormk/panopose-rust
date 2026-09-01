@@ -19,7 +19,7 @@ use panopose_core::{
     Orientation, Project, StarMarker, StellariumLandscape,
     astronomy::{ApproximateAstronomyProvider, Observer},
     export::{
-        ExportRequest, export_equirectangular_with_mask_and_progress,
+        ExportRequest, apply_nadir_overlay, export_equirectangular_with_mask_and_progress,
         validate_equirectangular_dimensions, viewer_texture_pixel_center_to_alt_az,
     },
     stellarium_landscape_ini,
@@ -62,6 +62,7 @@ struct ExportImageRequest {
     pitch_deg: f64,
     roll_deg: f64,
     sky_removal: bool,
+    nadir_overlay: Option<NadirOverlayRequest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +80,7 @@ struct ExportStellariumLandscapeRequest {
     pitch_deg: f64,
     roll_deg: f64,
     sky_removal: bool,
+    nadir_overlay: Option<NadirOverlayRequest>,
     latitude_deg: f64,
     longitude_deg: f64,
     elevation_m: f64,
@@ -91,6 +93,13 @@ struct PreviewSkyRemovedRequest {
     yaw_deg: f64,
     pitch_deg: f64,
     roll_deg: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct NadirOverlayRequest {
+    enabled: bool,
+    radius_deg: f64,
+    texture_png: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,9 +116,11 @@ struct WriteMetadataRequest {
     yaw_deg: f64,
     pitch_deg: f64,
     roll_deg: f64,
-    latitude_deg: f64,
-    longitude_deg: f64,
-    elevation_m: f64,
+    nadir_cap_enabled: bool,
+    nadir_cap_radius_deg: f64,
+    latitude_deg: Option<f64>,
+    longitude_deg: Option<f64>,
+    elevation_m: Option<f64>,
     capture_time: DateTime<FixedOffset>,
     reference_time: DateTime<FixedOffset>,
     timezone: String,
@@ -226,7 +237,8 @@ async fn export_image(app: AppHandle, request: ExportImageRequest) -> Result<(),
         if let Some(masks) = skyseg_masks {
             decontaminate_sky_edges(&mut exported, &masks.corrected_sky_mask);
         }
-        let exported = finalize_exported_pano(exported);
+        let mut exported = finalize_exported_pano(exported);
+        apply_requested_nadir_overlay(&mut exported, request.nadir_overlay)?;
         exported
             .save(&request.output)
             .map_err(|err| err.to_string())
@@ -281,7 +293,8 @@ async fn export_stellarium_landscape(
         if let Some(masks) = skyseg_masks {
             decontaminate_sky_edges(&mut exported, &masks.corrected_sky_mask);
         }
-        let exported = finalize_exported_pano(exported);
+        let mut exported = finalize_exported_pano(exported);
+        apply_requested_nadir_overlay(&mut exported, request.nadir_overlay)?;
         let mut texture_bytes = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(exported)
             .write_to(&mut texture_bytes, ImageFormat::Png)
@@ -345,6 +358,23 @@ fn export_orientation_from_pose(yaw_deg: f64, pitch_deg: f64, roll_deg: f64) -> 
 
 fn finalize_exported_pano(exported: RgbaImage) -> RgbaImage {
     image::imageops::flip_horizontal(&exported)
+}
+
+fn apply_requested_nadir_overlay(
+    exported: &mut RgbaImage,
+    overlay: Option<NadirOverlayRequest>,
+) -> Result<(), String> {
+    let Some(overlay) = overlay else {
+        return Ok(());
+    };
+    if !overlay.enabled {
+        return Ok(());
+    }
+
+    let texture = image::load_from_memory_with_format(&overlay.texture_png, ImageFormat::Png)
+        .map_err(|err| format!("failed to decode nadir overlay texture: {err}"))?
+        .to_rgba8();
+    apply_nadir_overlay(exported, overlay.radius_deg, &texture).map_err(|err| err.to_string())
 }
 
 fn validate_stellarium_texture_filename(filename: &str) -> Result<String, String> {
@@ -912,6 +942,8 @@ fn write_panopose_metadata(request: WriteMetadataRequest) -> Result<(), String> 
             "yaw_deg": request.yaw_deg,
             "pitch_deg": request.pitch_deg,
             "roll_deg": request.roll_deg,
+            "nadir_cap_enabled": request.nadir_cap_enabled,
+            "nadir_cap_radius_deg": request.nadir_cap_radius_deg,
             "latitude_deg": request.latitude_deg,
             "longitude_deg": request.longitude_deg,
             "elevation_m": request.elevation_m,
@@ -921,14 +953,8 @@ fn write_panopose_metadata(request: WriteMetadataRequest) -> Result<(), String> 
         }
     })
     .to_string();
-    let gps_lat_ref = if request.latitude_deg < 0.0 { "S" } else { "N" };
-    let gps_lon_ref = if request.longitude_deg < 0.0 {
-        "W"
-    } else {
-        "E"
-    };
-
-    let output = Command::new("exiftool")
+    let mut command = Command::new("exiftool");
+    command
         .arg("-overwrite_original")
         .arg("-XMP-GPano:UsePanoramaViewer=True")
         .arg("-XMP-GPano:ProjectionType=equirectangular")
@@ -945,18 +971,29 @@ fn write_panopose_metadata(request: WriteMetadataRequest) -> Result<(), String> 
             "-EXIF:OffsetTimeOriginal={}",
             request.capture_time.format("%:z")
         ))
-        .arg(format!("-EXIF:GPSLatitude={}", request.latitude_deg.abs()))
-        .arg(format!("-EXIF:GPSLatitudeRef={gps_lat_ref}"))
-        .arg(format!(
-            "-EXIF:GPSLongitude={}",
-            request.longitude_deg.abs()
-        ))
-        .arg(format!("-EXIF:GPSLongitudeRef={gps_lon_ref}"))
-        .arg(format!("-EXIF:GPSAltitude={}", request.elevation_m.abs()))
-        .arg(format!(
-            "-EXIF:GPSAltitudeRef={}",
-            if request.elevation_m < 0.0 { 1 } else { 0 }
-        ))
+        .arg("-GPS:all=");
+
+    if let (Some(latitude_deg), Some(longitude_deg)) = (request.latitude_deg, request.longitude_deg)
+    {
+        let gps_lat_ref = if latitude_deg < 0.0 { "S" } else { "N" };
+        let gps_lon_ref = if longitude_deg < 0.0 { "W" } else { "E" };
+        command
+            .arg(format!("-EXIF:GPSLatitude={}", latitude_deg.abs()))
+            .arg(format!("-EXIF:GPSLatitudeRef={gps_lat_ref}"))
+            .arg(format!("-EXIF:GPSLongitude={}", longitude_deg.abs()))
+            .arg(format!("-EXIF:GPSLongitudeRef={gps_lon_ref}"));
+
+        if let Some(elevation_m) = request.elevation_m {
+            command
+                .arg(format!("-EXIF:GPSAltitude={}", elevation_m.abs()))
+                .arg(format!(
+                    "-EXIF:GPSAltitudeRef={}",
+                    if elevation_m < 0.0 { 1 } else { 0 }
+                ));
+        }
+    }
+
+    let output = command
         .arg(&request.path)
         .output()
         .map_err(|err| format!("failed to run exiftool: {err}"))?;
