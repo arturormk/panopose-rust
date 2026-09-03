@@ -15,6 +15,7 @@ PanoPose uses odd minor versions for development builds and even minor versions 
 - Make `Align Target` vertical dragging follow the expected image-drag direction.
 - Fix Tauri frontend build hooks for the frontend working directory and use `dev.panopose.desktop` as the bundle identifier.
 - Build `panopose-cli` in the quickstart release flow and include it alongside `panopose` in Linux `.deb` and `.rpm` packages.
+- Add `--force-rebuild` to the release quickstart for clean Rust and frontend rebuilds.
 
 ## v1.0.0
 

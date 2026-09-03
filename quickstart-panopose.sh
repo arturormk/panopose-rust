@@ -12,6 +12,7 @@ readonly DESKTOP_INSTALL_DIR="$HOME/.local/share/applications"
 ASSUME_YES=0
 NO_INSTALL=0
 SKIP_APP_INSTALL=0
+FORCE_REBUILD=0
 BUILT_ARTIFACT=""
 PACKAGE_SELECTION=""
 NO_BUNDLE=0
@@ -27,6 +28,7 @@ Options:
   -y, --yes             Answer yes to interactive prompts.
   --no-install          Do not install missing build tools such as cargo-tauri.
   --skip-app-install    Build only; do not offer to install the app.
+  --force-rebuild       Clean Rust and frontend build artifacts before building.
   --bundles <list>      Build comma-separated packages, for example deb,rpm.
   --no-bundle           Build only the release executable; do not package it.
   -h, --help            Show this help.
@@ -132,6 +134,21 @@ ensure_node_dependencies() {
     info "Installing frontend dependencies with npm install"
     npm install --prefix "$FRONTEND_DIR"
   fi
+}
+
+force_rebuild_artifacts() {
+  ((FORCE_REBUILD)) || return 0
+
+  info "Force rebuild requested; cleaning Rust build artifacts"
+  cargo clean
+
+  info "Cleaning frontend build artifacts and caches"
+  rm -rf \
+    "$FRONTEND_DIR/dist" \
+    "$FRONTEND_DIR/node_modules/.vite" \
+    "$FRONTEND_DIR/tsconfig.tsbuildinfo" \
+    "$FRONTEND_DIR/tsconfig.app.tsbuildinfo" \
+    "$FRONTEND_DIR/tsconfig.node.tsbuildinfo"
 }
 
 print_system_report() {
@@ -555,6 +572,9 @@ parse_args() {
       --skip-app-install)
         SKIP_APP_INSTALL=1
         ;;
+      --force-rebuild)
+        FORCE_REBUILD=1
+        ;;
       --bundles)
         shift
         [[ $# -gt 0 ]] || die "--bundles requires a comma-separated package list."
@@ -586,6 +606,7 @@ main() {
   ensure_base_requirements
   ensure_cargo_tauri
   ensure_node_dependencies
+  force_rebuild_artifacts
   build_release
   list_artifacts
   if ((SKIP_APP_INSTALL)); then

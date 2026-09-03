@@ -1213,6 +1213,7 @@ Current behavior:
 * checks local Rust, Node.js, and npm availability;
 * offers to install `cargo-tauri` if it is missing;
 * installs frontend dependencies with `npm ci --prefix frontend`;
+* can force a clean Rust and frontend rebuild with `--force-rebuild`;
 * asks which final packages to build using a numbered menu, unless `--bundles` or `--no-bundle` is provided;
 * builds the `panopose-cli` release utility and a current-platform Tauri release with `cargo tauri build --ci`;
 * lists generated bundle artifacts and the release executable paths;

@@ -114,6 +114,7 @@ The quickstart script:
 - checks for Rust, Node.js, and npm;
 - offers to install `cargo-tauri` if it is missing;
 - installs frontend dependencies with `npm ci --prefix frontend`;
+- can force a clean Rust and frontend rebuild with `--force-rebuild`;
 - asks which final packages to build using a numbered menu, or accepts explicit `--bundles` / `--no-bundle` options;
 - builds the `panopose-cli` release utility and the desktop app with `cargo tauri build --ci`;
 - lists generated bundle artifacts and the release executable paths;
@@ -125,6 +126,7 @@ Useful options:
 ./quickstart-panopose.sh --skip-app-install
 ./quickstart-panopose.sh --no-install
 ./quickstart-panopose.sh --yes
+./quickstart-panopose.sh --force-rebuild
 ./quickstart-panopose.sh --bundles deb,rpm
 ./quickstart-panopose.sh --no-bundle
 ```
