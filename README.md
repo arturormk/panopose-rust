@@ -1,6 +1,6 @@
 ![Made with Codex](https://img.shields.io/badge/made%20with-Codex-111111)
 
-# PanoPose
+# PanoPose — 360° panorama alignment for astronomy/Stellarium
 
 PanoPose is a Linux desktop application for manually orienting, registering, inspecting, and exporting full-sphere equirectangular panoramas for astronomical observing-site planning. It helps align horizon features, Alt/Az grids, astronomy markers, and night-sky references so a panorama can be calibrated for planning observations.
 
