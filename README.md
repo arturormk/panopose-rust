@@ -1,4 +1,6 @@
 ![Made with Codex](https://img.shields.io/badge/made%20with-Codex-111111)
+[![CI](https://github.com/arturormk/panopose-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/arturormk/panopose-rust/actions/workflows/ci.yml)
+[![Release](https://github.com/arturormk/panopose-rust/actions/workflows/release.yml/badge.svg)](https://github.com/arturormk/panopose-rust/actions/workflows/release.yml)
 
 # PanoPose — 360° panorama alignment for astronomy/Stellarium
 
