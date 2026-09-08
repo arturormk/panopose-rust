@@ -12,6 +12,7 @@
 /src-tauri/gen/
 
 # Local/editor noise
+/_stuff/
 /.idea/
 /.vscode/
 *.swp
