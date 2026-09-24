@@ -4,6 +4,10 @@ All notable user-visible changes should be documented here.
 
 PanoPose uses odd minor versions for development builds and even minor versions for release lines.
 
+## v1.3 (development)
+
+- Accept uppercase and lowercase JPG/JPEG, PNG, and TIFF filename extensions in image dialogs, including uppercase `.JPG` files produced by cameras such as the GoPro MAX.
+
 ## v1.2
 
 - Add an optional branded nadir cap with live radius preview and PNG/Stellarium export support.

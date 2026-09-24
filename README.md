@@ -12,7 +12,7 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 
 ## Current Features
 
-- Load a target 2:1 equirectangular panorama and view it inside a zoomable Three.js sphere.
+- Load a target 2:1 equirectangular panorama and view it inside a zoomable Three.js sphere; image dialogs accept uppercase and lowercase JPG/JPEG, PNG, and TIFF filename extensions.
 - Navigate the view independently from panorama alignment.
 - Align the target panorama with yaw/azimuth, pitch/altitude, and roll/horizon-tilt controls.
 - Add calibrated reference panoramas as layers.

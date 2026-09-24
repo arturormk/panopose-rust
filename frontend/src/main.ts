@@ -163,6 +163,18 @@ const MIN_NADIR_RADIUS_DEG = 1;
 const MAX_NADIR_RADIUS_DEG = 45;
 const NADIR_CAP_TEXTURE_SIZE = 512;
 const PANOPOSE_ICON_URL = "/panopose-icon.png";
+const IMAGE_FILE_EXTENSIONS = [
+  "jpg",
+  "JPG",
+  "jpeg",
+  "JPEG",
+  "png",
+  "PNG",
+  "tif",
+  "TIF",
+  "tiff",
+  "TIFF",
+];
 
 const state = {
   mode: "navigate" as Mode,
@@ -804,7 +816,7 @@ async function openTargetImage(): Promise<void> {
       filters: [
         {
           name: "Images",
-          extensions: ["jpg", "jpeg", "png", "tif", "tiff"],
+          extensions: IMAGE_FILE_EXTENSIONS,
         },
       ],
     });
@@ -835,7 +847,7 @@ async function addReferenceImages(): Promise<void> {
       filters: [
         {
           name: "Images",
-          extensions: ["jpg", "jpeg", "png", "tif", "tiff"],
+          extensions: IMAGE_FILE_EXTENSIONS,
         },
       ],
     });
@@ -866,7 +878,7 @@ async function loadExifMetadataFromImage(): Promise<void> {
       filters: [
         {
           name: "Images",
-          extensions: ["jpg", "jpeg", "png", "tif", "tiff"],
+          extensions: IMAGE_FILE_EXTENSIONS,
         },
       ],
     });
@@ -2162,7 +2174,7 @@ async function saveMetadataAs(): Promise<void> {
       filters: [
         {
           name: "Images",
-          extensions: ["jpg", "jpeg", "png", "tif", "tiff"],
+          extensions: IMAGE_FILE_EXTENSIONS,
         },
       ],
     });
