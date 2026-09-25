@@ -51,6 +51,21 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 6. To compare against an existing calibrated panorama, select `Add Reference`. This reveals Target, Reference, Fade, and Blink comparison buttons plus Show and opacity controls for the target and reference layers. Removing the final reference hides those controls again.
 7. Use `Save As` to write orientation/time/site metadata back into an unmapped image, `Export Pano As` to generate a calibrated PNG panorama, or `Export Stellarium ZIP` to generate a Stellarium landscape package.
 
+### GoPro MAX Night-to-Day Reference Workflow
+
+A GoPro MAX can capture several 360° night photographs in quick succession from a fixed position. Stack or blend those photographs in an image-editing program to reduce noise and make faint stars easier to distinguish. Keep the images registered, retain the full-sphere 2:1 equirectangular projection, and avoid edits that warp the horizon or move landscape features. Taking the photographs close together limits apparent motion between the star fields.
+
+If the stacked panorama preserves a visible horizon, it combines two useful constraints: the landscape establishes the local horizon and bright stars or planets provide precise astronomical directions. Load this nighttime composite as the Target in PanoPose, set the correct site and reference time, and align the visible celestial objects with their markers. Use `Save As` when it is calibrated so the nighttime panorama retains its PanoPose pose metadata.
+
+To register a daytime panorama more precisely, capture it from the same camera position, then:
+
+1. Open the daytime panorama as the Target.
+2. Select `Add Reference` and load the calibrated nighttime panorama.
+3. Use Target, Reference, Fade, and Blink together with the layer Show and opacity controls to compare the shared horizon and landscape features.
+4. Adjust only the daytime Target until it matches the fixed nighttime Reference, then save or export the result.
+
+Keeping the camera at the same location is important: a viewpoint change introduces parallax, especially in nearby objects, so the two landscapes may no longer register exactly even when both panoramas have correct orientation.
+
 For ordinary phone photos, PanoPose intentionally imports only EXIF time/site metadata. It does not attempt to project normal rectilinear photos onto the sphere, because reliable FOV estimation is usually unavailable from phone EXIF alone.
 
 `Load EXIF from Image` updates the astronomical reference time, not the target panorama capture time. To deliberately replace the capture timestamp that `Save As` writes to EXIF, edit `Panorama capture time` or use `Use Reference Time`.
