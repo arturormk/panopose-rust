@@ -344,6 +344,59 @@ a {
   font-size: 12px;
 }
 
+.orientation-inactive {
+  opacity: 0.55;
+}
+
+.tilt-compass {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  color: #9aa7b4;
+  font-size: 12px;
+  text-align: center;
+}
+
+.tilt-compass svg {
+  width: 112px;
+  height: 112px;
+  overflow: visible;
+  fill: none;
+  stroke: #56616d;
+  stroke-width: 1.5;
+}
+
+.tilt-compass text {
+  fill: #9aa7b4;
+  stroke: none;
+  font-size: 9px;
+  text-anchor: middle;
+}
+
+.tilt-compass-cross {
+  opacity: 0.35;
+}
+
+.tilt-compass-arrow {
+  stroke: #d9b44a;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+  transform-origin: 60px 60px;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.tilt-compass-arrow.inactive {
+  opacity: 0.35;
+}
+
+.orientation-help {
+  margin: 0;
+  color: #8794a1;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .viewer {
   position: relative;
   min-width: 0;

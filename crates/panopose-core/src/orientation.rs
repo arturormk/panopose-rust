@@ -1,4 +1,4 @@
-use glam::{DQuat, DVec3};
+use glam::{DQuat, DVec3, EulerRot};
 use serde::{Deserialize, Serialize};
 
 use crate::coords::AltAz;
@@ -34,6 +34,32 @@ impl Orientation {
 
     pub fn to_quat(self) -> DQuat {
         DQuat::from_xyzw(self.x, self.y, self.z, self.w).normalize()
+    }
+
+    pub fn is_valid(self) -> bool {
+        self.w.is_finite()
+            && self.x.is_finite()
+            && self.y.is_finite()
+            && self.z.is_finite()
+            && (self.w * self.w + self.x * self.x + self.y * self.y + self.z * self.z) > 1e-20
+    }
+
+    pub fn normalized(self) -> Option<Self> {
+        self.is_valid().then(|| Self::from_quat(self.to_quat()))
+    }
+
+    pub fn compose(self, rhs: Self) -> Self {
+        Self::from_quat(self.to_quat() * rhs.to_quat())
+    }
+
+    pub fn to_legacy_ui_euler_deg(self, base_yaw_deg: f64) -> (f64, f64, f64) {
+        let full = self.compose(Self::from_yaw_pitch_roll_deg(base_yaw_deg, 0.0, 0.0));
+        let (yaw_with_base, roll, pitch) = full.to_quat().to_euler(EulerRot::YXZ);
+        (
+            (yaw_with_base.to_degrees() - base_yaw_deg + 180.0).rem_euclid(360.0) - 180.0,
+            pitch.to_degrees(),
+            roll.to_degrees(),
+        )
     }
 
     pub fn from_yaw_pitch_roll_deg(yaw_deg: f64, pitch_deg: f64, roll_deg: f64) -> Self {
@@ -98,5 +124,24 @@ mod tests {
         let round_trip = o.world_alt_az_to_source(o.source_alt_az_to_world(source));
         assert!((round_trip.altitude_deg - source.altitude_deg).abs() < 1e-9);
         assert_angle_close(round_trip.azimuth_deg, source.azimuth_deg);
+    }
+
+    #[test]
+    fn legacy_ui_euler_round_trips_a_composed_pose() {
+        let source = Orientation::from_quat(
+            DQuat::from_axis_angle(DVec3::Z, 0.17)
+                * DQuat::from_axis_angle(DVec3::X, -0.23)
+                * DQuat::from_axis_angle(DVec3::Y, 0.41),
+        );
+        let (yaw, pitch, roll) = source.to_legacy_ui_euler_deg(-90.0);
+        let full = DQuat::from_euler(
+            EulerRot::YXZ,
+            (yaw - 90.0).to_radians(),
+            roll.to_radians(),
+            pitch.to_radians(),
+        );
+        let recovered =
+            Orientation::from_quat(full * DQuat::from_axis_angle(DVec3::Y, 90_f64.to_radians()));
+        assert!((1.0 - source.to_quat().dot(recovered.to_quat()).abs()) < 1e-12);
     }
 }

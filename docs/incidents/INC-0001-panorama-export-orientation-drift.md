@@ -26,7 +26,7 @@ Matching the quaternion alone was insufficient. Rust first used a different yaw/
 ## Resolution
 The final implementation separates the responsibilities:
 
-- Rust export pose construction now matches the preview's Three.js `Euler(pitch, -90 + yaw, roll, "YXZ")` quaternion formula exactly.
+- Preview and Rust export now consume the same normalized orientation quaternion and compose the fixed -90° viewer-texture yaw as a separate final transform.
 - Core resampling uses a dedicated `viewer_texture_*` mapping for interpreting source pixels the same way the preview sphere does.
 - Export image and Stellarium ZIP paths apply a single final raster finalization step so the saved PNG presentation is not horizontally mirrored.
 - Skyseg mask remapping uses the same source texture mapping as export, keeping alpha aligned with the posed image.
@@ -35,7 +35,7 @@ The final implementation separates the responsibilities:
 ## Prevention / Guardrail
 - Keep preview pose math, source texture mapping, and saved raster presentation as separate named steps.
 - Do not fix azimuth or mirror bugs by changing constants unless the coordinate contract being changed is explicit.
-- Maintain a golden quaternion test against local Three.js for the `YXZ` pose conversion.
+- Maintain cross-layer tests for quaternion composition and legacy Euler metadata conversion.
 - Maintain a test for the viewer source texture mapping.
 - Maintain a test that the final export raster flip is applied exactly once.
 - When export and preview disagree, test the center ray numerically before changing yaw offsets.

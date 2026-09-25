@@ -4,6 +4,19 @@ import * as THREE from "three";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, message, open, save } from "@tauri-apps/plugin-dialog";
+import {
+  IDENTITY_ORIENTATION,
+  beginAlignmentDrag,
+  controlsFromOrientation,
+  deserializeQuaternion,
+  legacyEulerOrientation,
+  meshQuaternion,
+  orientationFromControls,
+  solveAlignmentDrag,
+  type AlignmentDragState,
+  type OrientationControls,
+  type SerializedQuaternion,
+} from "./alignment";
 
 type Mode = "navigate" | "align";
 type LayerKind = "target" | "reference";
@@ -41,12 +54,6 @@ interface StarMarker {
   magnitude: number;
 }
 
-interface Pose {
-  yaw: number;
-  pitch: number;
-  roll: number;
-}
-
 interface AltAzReadout {
   altitudeDeg: number;
   azimuthDeg: number;
@@ -77,7 +84,7 @@ interface ImageMetadataResult {
   latitude: number | null;
   longitude: number | null;
   elevation: number | null;
-  pose: Partial<Pose> | null;
+  orientation: SerializedQuaternion | null;
   nadirOverlay: Partial<NadirOverlayState> | null;
   timezone: string | null;
 }
@@ -100,7 +107,7 @@ interface NadirOverlayRequest {
 
 interface SkyPreviewCacheKey {
   path: string;
-  pose: Pose;
+  orientation: SerializedQuaternion;
 }
 
 interface StellariumExportDetails {
@@ -113,6 +120,8 @@ interface StellariumExportDetails {
 }
 
 interface PanoposeMetadata {
+  schema_version: number | null;
+  orientation_quaternion: SerializedQuaternion | null;
   yaw_deg: number | null;
   pitch_deg: number | null;
   roll_deg: number | null;
@@ -137,7 +146,7 @@ interface ImageLayer {
   kind: LayerKind;
   name: string;
   path: string;
-  pose: Pose;
+  orientation: SerializedQuaternion;
   opacity: number;
   visible: boolean;
   objectUrl: string;
@@ -157,7 +166,11 @@ interface ImageLayer {
 const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const MAX_IMAGE_LAYERS = 4;
 const BLINK_INTERVAL_MS = 550;
-const DEFAULT_POSE: Pose = { yaw: 0, pitch: 0, roll: 0 };
+const DEFAULT_CONTROLS: OrientationControls = {
+  azimuthOffsetDeg: 0,
+  tiltAngleDeg: 0,
+  highSideAzimuthDeg: 180,
+};
 const DEFAULT_NADIR_RADIUS_DEG = 12;
 const MIN_NADIR_RADIUS_DEG = 1;
 const MAX_NADIR_RADIUS_DEG = 45;
@@ -178,7 +191,8 @@ const IMAGE_FILE_EXTENSIONS = [
 
 const state = {
   mode: "navigate" as Mode,
-  pose: { yaw: 0, pitch: 0, roll: 0 } satisfies Pose,
+  orientation: { ...IDENTITY_ORIENTATION } satisfies SerializedQuaternion,
+  orientationControls: { ...DEFAULT_CONTROLS } satisfies OrientationControls,
   step: 0.01,
   comparisonMode: "blend" as ComparisonMode,
   blinkShowTarget: true,
@@ -309,15 +323,26 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <option value="0.001">0.001 deg</option>
           </select>
         </label>
-        <label class="field">Yaw (Azimuth)
-          <input id="yaw" type="number" step="0.001" value="0" />
+        <label class="field">Azimuth Offset
+          <input id="azimuth-offset" type="number" step="0.001" value="0" />
         </label>
-        <label class="field">Pitch (Altitude)
-          <input id="roll" type="number" step="0.001" value="0" />
+        <label class="field">Tilt Angle
+          <input id="tilt-angle" type="number" min="0" max="90" step="0.001" value="0" />
         </label>
-        <label class="field">Roll (Horizontal Tilt)
-          <input id="pitch" type="number" step="0.001" value="0" />
+        <label class="field" id="high-side-field">High-Side Azimuth
+          <input id="high-side-azimuth" type="number" step="0.001" value="180" />
         </label>
+        <div class="tilt-compass" aria-label="Horizon tilt compass">
+          <svg viewBox="0 0 120 120" aria-hidden="true">
+            <circle cx="60" cy="60" r="43"></circle>
+            <path class="tilt-compass-cross" d="M60 17v86M17 60h86"></path>
+            <path class="tilt-compass-arrow" id="tilt-compass-arrow" d="M60 60V25M60 25l-7 10M60 25l7 10"></path>
+            <text x="60" y="13">N</text><text x="108" y="64">E</text>
+            <text x="60" y="116">S</text><text x="8" y="64">W</text>
+          </svg>
+          <div id="tilt-compass-readout">Level — high side 180.0° retained</div>
+        </div>
+        <p class="orientation-help">Tilt describes one horizon plane. Its local appearance changes with viewing azimuth.</p>
       </section>
 
       <section class="panel">
@@ -444,6 +469,7 @@ const cursorRaycaster = new THREE.Raycaster();
 let yawView = Math.PI;
 let pitchView = 0;
 let dragging = false;
+let alignmentDrag: AlignmentDragState | null = null;
 let lastX = 0;
 let lastY = 0;
 let cursorAltAz: AltAzReadout | null = null;
@@ -498,9 +524,23 @@ document.querySelector("#compare-blink")!.addEventListener("click", () => setCom
 document.querySelector("#layer-list")!.addEventListener("input", handleLayerListInput);
 document.querySelector("#layer-list")!.addEventListener("click", handleLayerListClick);
 
-for (const id of ["yaw", "pitch", "roll"] as const) {
-  document.querySelector<HTMLInputElement>(`#${id}`)!.addEventListener("change", (event) => {
-    state.pose[id] = Number((event.target as HTMLInputElement).value);
+for (const id of ["azimuth-offset", "tilt-angle", "high-side-azimuth"] as const) {
+  document.querySelector<HTMLInputElement>(`#${id}`)!.addEventListener("change", () => {
+    const azimuthOffsetDeg = normalizeDegrees(readFiniteOrientationInput(
+      "#azimuth-offset",
+      state.orientationControls.azimuthOffsetDeg,
+    ));
+    const tiltAngleDeg = THREE.MathUtils.clamp(readFiniteOrientationInput(
+      "#tilt-angle",
+      state.orientationControls.tiltAngleDeg,
+    ), 0, 90);
+    const highSideAzimuthDeg = normalizeDegrees(readFiniteOrientationInput(
+      "#high-side-azimuth",
+      state.orientationControls.highSideAzimuthDeg,
+    ));
+    state.orientationControls = { azimuthOffsetDeg, tiltAngleDeg, highSideAzimuthDeg };
+    state.orientation = orientationFromControls(state.orientationControls);
+    syncOrientationControls();
     applyPose();
   });
 }
@@ -537,6 +577,10 @@ canvas.addEventListener("pointerdown", (event) => {
   dragging = true;
   lastX = event.clientX;
   lastY = event.clientY;
+  alignmentDrag =
+    state.mode === "align" && getTargetLayer()
+      ? beginAlignmentDrag(state.orientation, pointerWorldDirection(event), PANORAMA_BASE_YAW_DEG)
+      : null;
   updateCursorAltAz(event);
   canvas.setPointerCapture(event.pointerId);
 });
@@ -560,11 +604,16 @@ canvas.addEventListener("pointermove", (event) => {
       -Math.PI / 2 + 0.02,
       Math.PI / 2 - 0.02,
     );
-  } else {
-    const dragScale = navigationDragScale();
-    state.pose.yaw -= THREE.MathUtils.radToDeg(dx * dragScale.horizontalRadiansPerPixel);
-    state.pose.roll -= THREE.MathUtils.radToDeg(dy * dragScale.verticalRadiansPerPixel);
-    syncPoseInputs();
+  } else if (alignmentDrag) {
+    const solved = solveAlignmentDrag(
+      alignmentDrag,
+      pointerWorldDirection(event),
+      PANORAMA_BASE_YAW_DEG,
+      state.orientationControls.highSideAzimuthDeg,
+    );
+    state.orientation = solved.orientation;
+    state.orientationControls = solved.controls;
+    syncOrientationControls();
     applyPose();
   }
 
@@ -573,8 +622,24 @@ canvas.addEventListener("pointermove", (event) => {
 
 canvas.addEventListener("pointerup", (event) => {
   dragging = false;
+  alignmentDrag = null;
   updateCursorAltAz(event);
-  canvas.releasePointerCapture(event.pointerId);
+  if (canvas.hasPointerCapture(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+});
+
+canvas.addEventListener("pointercancel", (event) => {
+  dragging = false;
+  alignmentDrag = null;
+  if (canvas.hasPointerCapture(event.pointerId)) {
+    canvas.releasePointerCapture(event.pointerId);
+  }
+});
+
+canvas.addEventListener("lostpointercapture", () => {
+  dragging = false;
+  alignmentDrag = null;
 });
 
 canvas.addEventListener("pointerleave", () => {
@@ -591,6 +656,7 @@ canvas.addEventListener("wheel", (event) => {
 
 window.addEventListener("resize", resize);
 syncStepInputs();
+syncOrientationControls();
 syncNadirOverlayControls();
 void updateNadirOverlayPreview();
 applyPose();
@@ -629,7 +695,7 @@ async function loadSkysegAvailability(): Promise<void> {
 function applyPose(): void {
   const target = getTargetLayer();
   if (target) {
-    target.pose = { ...state.pose };
+    target.orientation = { ...state.orientation };
     applyLayerPose(target);
     if (state.skyRemoval.enabled && state.skyRemoval.available) {
       setTargetTexture(target, target.texture);
@@ -639,14 +705,28 @@ function applyPose(): void {
   updateReadout();
 }
 
-function syncPoseInputs(): void {
-  for (const id of ["yaw", "pitch", "roll"] as const) {
-    document.querySelector<HTMLInputElement>(`#${id}`)!.value = state.pose[id].toFixed(3);
-  }
+function syncOrientationControls(): void {
+  const controls = state.orientationControls;
+  document.querySelector<HTMLInputElement>("#azimuth-offset")!.value = controls.azimuthOffsetDeg.toFixed(3);
+  document.querySelector<HTMLInputElement>("#tilt-angle")!.value = controls.tiltAngleDeg.toFixed(3);
+  document.querySelector<HTMLInputElement>("#high-side-azimuth")!.value = controls.highSideAzimuthDeg.toFixed(3);
+  const level = controls.tiltAngleDeg < 1e-9;
+  document.querySelector("#high-side-field")!.classList.toggle("orientation-inactive", level);
+  const arrow = document.querySelector<SVGPathElement>("#tilt-compass-arrow")!;
+  arrow.style.transform = `rotate(${controls.highSideAzimuthDeg}deg)`;
+  arrow.classList.toggle("inactive", level);
+  document.querySelector("#tilt-compass-readout")!.textContent = level
+    ? `Level — high side ${controls.highSideAzimuthDeg.toFixed(1)}° retained`
+    : `Tilt ${controls.tiltAngleDeg.toFixed(2)}° — high side ${controls.highSideAzimuthDeg.toFixed(1)}°`;
+}
+
+function readFiniteOrientationInput(selector: string, fallback: number): number {
+  const value = Number(document.querySelector<HTMLInputElement>(selector)!.value);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 function syncStepInputs(): void {
-  for (const id of ["yaw", "pitch", "roll"] as const) {
+  for (const id of ["azimuth-offset", "tilt-angle", "high-side-azimuth"] as const) {
     document.querySelector<HTMLInputElement>(`#${id}`)!.step = String(state.step);
   }
 }
@@ -899,7 +979,7 @@ async function loadExifMetadataFromImage(): Promise<void> {
     applyImageMetadata(metadata, {
       time: choice === "time" || choice === "both",
       site: choice === "site" || choice === "both",
-      pose: false,
+      orientation: false,
       nadirOverlay: false,
     });
     await refreshAstronomy();
@@ -919,7 +999,7 @@ async function loadTargetFromBlob(path: string, metadataSource: Blob): Promise<v
       kind: "target",
       path,
       file: metadataSource,
-      pose: state.pose,
+      orientation: state.orientation,
       opacity: 1,
       visible: true,
       renderOrder: 1,
@@ -943,16 +1023,16 @@ async function loadTargetFromBlob(path: string, metadataSource: Blob): Promise<v
 
 async function addReferenceFromBlob(path: string, file: Blob): Promise<void> {
   const metadata = await readImageMetadata(file);
-  const pose = poseFromMetadata(metadata?.pose, DEFAULT_POSE);
+  const orientation = metadata?.orientation ?? IDENTITY_ORIENTATION;
   const layer = await createImageLayer({
     kind: "reference",
     path,
     file,
-    pose,
+    orientation,
     opacity: 0.5,
     visible: true,
     renderOrder: state.layers.length + 1,
-    hasPoseMetadata: metadata?.pose !== null && metadata?.pose !== undefined,
+    hasPoseMetadata: metadata?.orientation !== null && metadata?.orientation !== undefined,
   });
   state.layers.push(layer);
   scene.add(layer.mesh);
@@ -965,7 +1045,7 @@ async function createImageLayer(options: {
   kind: LayerKind;
   path: string;
   file: Blob;
-  pose: Pose;
+  orientation: SerializedQuaternion;
   opacity: number;
   visible: boolean;
   renderOrder: number;
@@ -990,7 +1070,7 @@ async function createImageLayer(options: {
     kind: options.kind,
     name: basename(options.path),
     path: options.path,
-    pose: { ...options.pose },
+    orientation: { ...options.orientation },
     opacity: options.opacity,
     visible: options.visible,
     objectUrl,
@@ -1031,20 +1111,7 @@ function disposeImageLayer(layer: ImageLayer): void {
 }
 
 function applyLayerPose(layer: ImageLayer): void {
-  layer.mesh.rotation.set(
-    THREE.MathUtils.degToRad(layer.pose.pitch),
-    THREE.MathUtils.degToRad(PANORAMA_BASE_YAW_DEG + layer.pose.yaw),
-    THREE.MathUtils.degToRad(layer.pose.roll),
-    "YXZ",
-  );
-}
-
-function poseFromMetadata(metadataPose: Partial<Pose> | null | undefined, fallback: Pose): Pose {
-  return {
-    yaw: metadataPose?.yaw ?? fallback.yaw,
-    pitch: metadataPose?.pitch ?? fallback.pitch,
-    roll: metadataPose?.roll ?? fallback.roll,
-  };
+  layer.mesh.quaternion.copy(meshQuaternion(layer.orientation, PANORAMA_BASE_YAW_DEG));
 }
 
 function selectedToPaths(selected: string | string[] | null): string[] {
@@ -1341,7 +1408,7 @@ async function applyTargetMetadataFromImage(file: Blob): Promise<ImageMetadataRe
     return null;
   }
 
-  applyImageMetadata(metadata, { time: true, site: true, pose: true, nadirOverlay: true });
+  applyImageMetadata(metadata, { time: true, site: true, orientation: true, nadirOverlay: true });
   setCaptureTimeFromMetadata(metadata, "Target EXIF");
   return metadata;
 }
@@ -1354,7 +1421,7 @@ function clearSiteInputs(): void {
 
 function applyImageMetadata(
   metadata: ImageMetadataResult,
-  options: { time: boolean; site: boolean; pose: boolean; nadirOverlay: boolean },
+  options: { time: boolean; site: boolean; orientation: boolean; nadirOverlay: boolean },
 ): void {
   if (options.time && metadata.timestamp) {
     document.querySelector<HTMLInputElement>("#time")!.value = metadata.timestamp.localDateTime;
@@ -1374,11 +1441,14 @@ function applyImageMetadata(
       metadata.elevation === null ? "" : String(metadata.elevation);
   }
   updateSiteDependentControls();
-  if (options.pose && metadata.pose) {
-    state.pose.yaw = metadata.pose.yaw ?? state.pose.yaw;
-    state.pose.pitch = metadata.pose.pitch ?? state.pose.pitch;
-    state.pose.roll = metadata.pose.roll ?? state.pose.roll;
-    syncPoseInputs();
+  if (options.orientation && metadata.orientation) {
+    state.orientation = { ...metadata.orientation };
+    state.orientationControls = controlsFromOrientation(
+      state.orientation,
+      state.orientationControls.highSideAzimuthDeg,
+    );
+    state.orientation = orientationFromControls(state.orientationControls);
+    syncOrientationControls();
     applyPose();
   }
   if (options.nadirOverlay && metadata.nadirOverlay) {
@@ -1628,14 +1698,9 @@ async function readImageMetadata(file: Blob): Promise<ImageMetadataResult | null
         panopose?.longitude_deg ??
         null,
       elevation: normalizeGpsAltitude(tags.GPSAltitude, tags.GPSAltitudeRef) ?? panopose?.elevation_m ?? null,
-      pose:
-        gpano === null && panopose === null
-          ? null
-          : {
-              yaw: gpano?.heading_deg ?? panopose?.yaw_deg ?? undefined,
-              pitch: gpano?.roll_deg ?? panopose?.roll_deg ?? undefined,
-              roll: gpano?.pitch_deg ?? panopose?.pitch_deg ?? undefined,
-            },
+      orientation:
+        panopose?.orientation_quaternion ??
+        legacyMetadataOrientation(gpano, panopose),
       nadirOverlay:
         panopose && (panopose.nadir_cap_enabled !== null || panopose.nadir_cap_radius_deg !== null)
           ? {
@@ -1672,6 +1737,8 @@ function parsePanoposeDescription(value: unknown): PanoposeMetadata | null {
     const metadata = parsed.panopose;
     if (!metadata) return null;
     return {
+      schema_version: normalizeNumber(metadata.schema_version),
+      orientation_quaternion: normalizeSerializedQuaternion(metadata.orientation_quaternion),
       yaw_deg: normalizeNumber(metadata.yaw_deg),
       pitch_deg: normalizeNumber(metadata.pitch_deg),
       roll_deg: normalizeNumber(metadata.roll_deg),
@@ -1687,6 +1754,38 @@ function parsePanoposeDescription(value: unknown): PanoposeMetadata | null {
   } catch {
     return null;
   }
+}
+
+function legacyMetadataOrientation(
+  gpano: GpanoPoseMetadata | null,
+  panopose: PanoposeMetadata | null,
+): SerializedQuaternion | null {
+  if (gpano === null && panopose === null) return null;
+  const yaw = gpano?.heading_deg ?? panopose?.yaw_deg;
+  const pitch = gpano?.pitch_deg ?? panopose?.pitch_deg;
+  const roll = gpano?.roll_deg ?? panopose?.roll_deg;
+  if (yaw === null && pitch === null && roll === null) return null;
+  return legacyEulerOrientation(yaw ?? 0, pitch ?? 0, roll ?? 0, PANORAMA_BASE_YAW_DEG);
+}
+
+function normalizeSerializedQuaternion(value: unknown): SerializedQuaternion | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const quaternion = {
+    w: normalizeNumber(record.w),
+    x: normalizeNumber(record.x),
+    y: normalizeNumber(record.y),
+    z: normalizeNumber(record.z),
+  };
+  if (
+    quaternion.w === null || quaternion.x === null || quaternion.y === null || quaternion.z === null ||
+    quaternion.w * quaternion.w + quaternion.x * quaternion.x +
+      quaternion.y * quaternion.y + quaternion.z * quaternion.z < 1e-20
+  ) {
+    return null;
+  }
+  const normalized = deserializeQuaternion(quaternion as SerializedQuaternion);
+  return { w: normalized.w, x: normalized.x, y: normalized.y, z: normalized.z };
 }
 
 function decodeHtmlEntities(value: string): string {
@@ -1786,7 +1885,7 @@ function setOpenedImagePath(path: string): void {
 function currentSkyPreviewCacheKey(target: ImageLayer): SkyPreviewCacheKey {
   return {
     path: target.path,
-    pose: { ...state.pose },
+    orientation: { ...state.orientation },
   };
 }
 
@@ -1795,9 +1894,10 @@ function skyPreviewCacheMatches(layer: ImageLayer, cacheKey: SkyPreviewCacheKey)
   return (
     cached !== null &&
     cached.path === cacheKey.path &&
-    cached.pose.yaw === cacheKey.pose.yaw &&
-    cached.pose.pitch === cacheKey.pose.pitch &&
-    cached.pose.roll === cacheKey.pose.roll
+    cached.orientation.w === cacheKey.orientation.w &&
+    cached.orientation.x === cacheKey.orientation.x &&
+    cached.orientation.y === cacheKey.orientation.y &&
+    cached.orientation.z === cacheKey.orientation.z
   );
 }
 
@@ -1836,9 +1936,7 @@ async function applySkyPreview(): Promise<void> {
       request: {
         input: target.path,
         max_width: 4096,
-        yaw_deg: state.pose.yaw,
-        pitch_deg: state.pose.pitch,
-        roll_deg: state.pose.roll,
+        orientation: state.orientation,
       },
     });
     if (requestId !== state.skyRemoval.previewRequestId || !state.skyRemoval.enabled) return;
@@ -1925,9 +2023,7 @@ async function exportCurrentTargetImage(): Promise<void> {
           width: target.dimensions.width,
           height: target.dimensions.height,
           center_azimuth_deg: 180.0,
-          yaw_deg: state.pose.yaw,
-          pitch_deg: state.pose.pitch,
-          roll_deg: state.pose.roll,
+          orientation: state.orientation,
           sky_removal: state.skyRemoval.enabled && state.skyRemoval.available,
           nadir_overlay: nadirOverlay,
         },
@@ -1983,9 +2079,7 @@ async function exportCurrentTargetStellariumZip(): Promise<void> {
           description: details.description,
           width: target.dimensions.width,
           height: target.dimensions.height,
-          yaw_deg: state.pose.yaw,
-          pitch_deg: state.pose.pitch,
-          roll_deg: state.pose.roll,
+          orientation: state.orientation,
           sky_removal: state.skyRemoval.enabled && state.skyRemoval.available,
           nadir_overlay: nadirOverlay,
           latitude_deg: latitude,
@@ -2224,9 +2318,7 @@ async function writeMetadataToImage(targetPath: string, sourcePath: string, over
         path: targetPath,
         source_path: sourcePath,
         overwrite_existing: overwriteExisting,
-        yaw_deg: state.pose.yaw,
-        pitch_deg: state.pose.roll,
-        roll_deg: state.pose.pitch,
+        orientation: state.orientation,
         nadir_cap_enabled: state.nadirOverlay.enabled,
         nadir_cap_radius_deg: state.nadirOverlay.radiusDeg,
         latitude_deg: latitude,
@@ -2649,6 +2741,18 @@ function vectorToAltAz(vector: THREE.Vector3): AltAzReadout {
   };
 }
 
+function pointerWorldDirection(event: PointerEvent): THREE.Vector3 {
+  const rect = canvas.getBoundingClientRect();
+  cursorNdc.set(
+    ((event.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1,
+    -((event.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1,
+  );
+  updateCameraAim();
+  camera.updateMatrixWorld(true);
+  cursorRaycaster.setFromCamera(cursorNdc, camera);
+  return cursorRaycaster.ray.direction.clone().normalize();
+}
+
 function updateCursorAltAz(event: PointerEvent): void {
   const rect = canvas.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) {
@@ -2657,14 +2761,7 @@ function updateCursorAltAz(event: PointerEvent): void {
     return;
   }
 
-  cursorNdc.set(
-    ((event.clientX - rect.left) / rect.width) * 2 - 1,
-    -((event.clientY - rect.top) / rect.height) * 2 + 1,
-  );
-  updateCameraAim();
-  camera.updateMatrixWorld(true);
-  cursorRaycaster.setFromCamera(cursorNdc, camera);
-  cursorAltAz = vectorToAltAz(cursorRaycaster.ray.direction);
+  cursorAltAz = vectorToAltAz(pointerWorldDirection(event));
   updateReadout();
 }
 
@@ -2682,7 +2779,9 @@ function updateReadout(): void {
     `${state.mode === "navigate" ? "Navigate" : "Align Target"} | ` +
     `${layerMode} | ` +
     `${cursorText} | ` +
-    `az ${state.pose.yaw.toFixed(3)} pitch ${state.pose.roll.toFixed(3)} roll ${state.pose.pitch.toFixed(3)} | ` +
+    `az offset ${state.orientationControls.azimuthOffsetDeg.toFixed(3)} ` +
+    `tilt ${state.orientationControls.tiltAngleDeg.toFixed(3)} ` +
+    `high side ${state.orientationControls.highSideAzimuthDeg.toFixed(3)} | ` +
     `${referenceCount} reference layer${referenceCount === 1 ? "" : "s"} | ` +
     `${state.markers.length} astronomy markers | ` +
     `${state.planetariumMode ? `${state.starMarkers.length} stars | ` : ""}` +

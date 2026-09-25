@@ -56,7 +56,7 @@ As of the current implementation, PanoPose is a working Tauri + Rust + TypeScrip
 
 * target panorama loading and spherical viewing;
 * separate navigation and `Align Target` modes;
-* numeric yaw/azimuth, pitch/altitude, and roll/horizon-tilt controls;
+* numeric azimuth-offset, tilt-angle, and high-side-azimuth controls backed by one orientation quaternion;
 * reference panorama layers with opacity, target-only, reference-only, blend, and blink comparison modes;
 * a zoom-dependent Alt/Az grid;
 * EXIF/XMP metadata reading for time, timezone offset, GPS position, elevation, GPano pose, and PanoPose metadata;
@@ -99,13 +99,11 @@ Calibration therefore means determining the panorama's orientation in real-world
 
 The fundamental transform should be represented internally as a 3-D rotation, preferably using a quaternion or equivalent robust representation.
 
-The UI may expose more intuitive values such as:
+The UI exposes the same 3-D rotation as an azimuth offset plus a horizon plane described by tilt magnitude and high-side azimuth. This avoids presenting Euler axes as independent physical properties when their visible effect depends on viewing direction.
 
-* azimuth/yaw;
-* altitude/pitch;
-* roll.
+A rotation cannot translate the panorama horizon uniformly to a higher or lower altitude. The source horizon is a great circle, and a 3-D rotation always maps it to another great circle. The only available vertical-looking adjustment is therefore a tilt of that horizon plane: the horizon becomes highest at one azimuth, crosses altitude 0 degrees a quarter-turn to either side, and becomes equally low at the opposite azimuth. `Tilt Angle` is that maximum angular displacement, while `High-Side Azimuth` identifies the direction of its positive maximum. `Azimuth Offset` independently rotates the panorama around the zenith axis.
 
-However, Euler angles do not need to be the authoritative internal representation.
+The quaternion is the authoritative internal representation. The numeric controls are a reversible decomposition of that quaternion, not separately accumulated rotations.
 
 The calibrated panorama ultimately maps every source pixel to a real-world Alt/Az direction.
 
@@ -207,7 +205,9 @@ The exact UI is open to experimentation, but accidental modification of a calibr
 
 Current implementation note:
 
-* `Align Target` dragging moves the panorama in the same direction as the pointer, including vertical drag for roll/horizon-tilt adjustment.
+* `Align Target` records the source direction under the pointer and applies the shortest-arc quaternion from the initial pointer ray to the current pointer ray. The grabbed point therefore stays under the cursor for horizontal, vertical, and diagonal drags.
+* The fixed viewer-texture base yaw is composed separately from the calibrated orientation quaternion.
+* The numeric controls decompose the quaternion into Azimuth Offset, Tilt Angle, and High-Side Azimuth. High-Side Azimuth is retained but shown inactive when Tilt Angle is zero.
 
 Undo/redo should apply to pose adjustments.
 
@@ -238,13 +238,13 @@ Future automatic assistance is acceptable if useful, but it should not dictate t
 
 The user should be able to adjust the target panorama's orientation numerically.
 
-The UI should expose at least:
+The UI should expose:
 
-* azimuth/yaw;
-* altitude/pitch;
-* roll.
+* azimuth offset;
+* tilt angle, constrained to 0–90°;
+* high-side azimuth, identifying where the tilted horizon plane is highest.
 
-Fine `+` and `-` controls are particularly important for roll.
+A read-only compass should make the tilt direction visible. There is deliberately no horizon-height or altitude-offset control because a uniform vertical displacement is not representable by a rotation of a full sphere. Fine `+` and `-` controls are particularly important for tilt.
 
 A useful initial increment scheme might include:
 
@@ -259,8 +259,8 @@ Keyboard nudging should be considered.
 
 For example, the implementation might eventually provide:
 
-* directional keys for yaw/pitch;
-* keys such as Q/E for roll;
+* directional keys for azimuth and tilt;
+* keys for rotating the high-side azimuth;
 * modifiers for coarse/fine increments.
 
 The specific bindings are not mandated.
@@ -1406,7 +1406,7 @@ A useful initial milestone might include the items below. Many are now implement
 3. Render it as a zoomable spherical panorama.
 4. Navigate independently of panorama adjustment.
 5. Maintain panorama orientation as a quaternion.
-6. Numeric yaw/pitch/roll controls.
+6. Numeric azimuth-offset/tilt/high-side controls.
 7. Fine 0.01° nudging.
 8. Alt/Az grid with cardinal directions.
 9. Site coordinates and timezone.
@@ -1421,8 +1421,7 @@ A useful initial milestone might include the items below. Many are now implement
 
 Current implementation note:
 
-* implemented: items 1-4, 6, 8-14, and 16 through the current Tauri/frontend/core workflow;
-* partially represented: item 5 exists in the Rust core orientation model, while the frontend currently exposes yaw/pitch/roll directly;
+* implemented: items 1-6, 8-14, and 16 through the current Tauri/frontend/core workflow;
 * partially represented: item 17 exists in core/CLI export options, while the desktop UI currently exports with fixed South-centered output;
 * not yet implemented as a full user workflow: item 15 project save/load.
 
@@ -1460,7 +1459,8 @@ Test:
 * spherical direction ↔ Alt/Az;
 * quaternion transforms;
 * identity orientation;
-* known yaw/pitch/roll transforms;
+* known quaternion transforms and control-decomposition round trips;
+* exact cursor anchoring for cardinal and diagonal alignment drags;
 * seam behavior;
 * zenith/nadir behavior;
 * canonical export;

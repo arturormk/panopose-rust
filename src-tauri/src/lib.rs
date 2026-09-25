@@ -58,9 +58,7 @@ struct ExportImageRequest {
     width: u32,
     height: u32,
     center_azimuth_deg: f64,
-    yaw_deg: f64,
-    pitch_deg: f64,
-    roll_deg: f64,
+    orientation: Orientation,
     sky_removal: bool,
     nadir_overlay: Option<NadirOverlayRequest>,
 }
@@ -76,9 +74,7 @@ struct ExportStellariumLandscapeRequest {
     description: String,
     width: u32,
     height: u32,
-    yaw_deg: f64,
-    pitch_deg: f64,
-    roll_deg: f64,
+    orientation: Orientation,
     sky_removal: bool,
     nadir_overlay: Option<NadirOverlayRequest>,
     latitude_deg: f64,
@@ -90,9 +86,7 @@ struct ExportStellariumLandscapeRequest {
 struct PreviewSkyRemovedRequest {
     input: PathBuf,
     max_width: u32,
-    yaw_deg: f64,
-    pitch_deg: f64,
-    roll_deg: f64,
+    orientation: Orientation,
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,9 +107,7 @@ struct WriteMetadataRequest {
     path: PathBuf,
     source_path: Option<PathBuf>,
     overwrite_existing: bool,
-    yaw_deg: f64,
-    pitch_deg: f64,
-    roll_deg: f64,
+    orientation: Orientation,
     nadir_cap_enabled: bool,
     nadir_cap_radius_deg: f64,
     latitude_deg: Option<f64>,
@@ -208,11 +200,7 @@ async fn export_image(app: AppHandle, request: ExportImageRequest) -> Result<(),
             width: request.width,
             height: request.height,
             center_azimuth_deg: request.center_azimuth_deg,
-            orientation: export_orientation_from_pose(
-                request.yaw_deg,
-                request.pitch_deg,
-                request.roll_deg,
-            ),
+            orientation: export_orientation_from_pose(request.orientation)?,
         };
         let skyseg_masks = if request.sky_removal {
             Some(skyseg_masks_for_export(&source, export_request)?)
@@ -264,11 +252,7 @@ async fn export_stellarium_landscape(
             width: request.width,
             height: request.height,
             center_azimuth_deg: 180.0,
-            orientation: export_orientation_from_pose(
-                request.yaw_deg,
-                request.pitch_deg,
-                request.roll_deg,
-            ),
+            orientation: export_orientation_from_pose(request.orientation)?,
         };
         let skyseg_masks = if request.sky_removal {
             Some(skyseg_masks_for_export(&source, export_request)?)
@@ -336,24 +320,15 @@ fn validate_stellarium_directory_name(name: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn export_orientation_from_pose(yaw_deg: f64, pitch_deg: f64, roll_deg: f64) -> Orientation {
-    let x = pitch_deg.to_radians();
-    let y = (PANORAMA_BASE_YAW_DEG + yaw_deg).to_radians();
-    let z = roll_deg.to_radians();
-
-    let c1 = (x / 2.0).cos();
-    let c2 = (y / 2.0).cos();
-    let c3 = (z / 2.0).cos();
-    let s1 = (x / 2.0).sin();
-    let s2 = (y / 2.0).sin();
-    let s3 = (z / 2.0).sin();
-
-    Orientation {
-        x: s1 * c2 * c3 + c1 * s2 * s3,
-        y: c1 * s2 * c3 - s1 * c2 * s3,
-        z: c1 * c2 * s3 - s1 * s2 * c3,
-        w: c1 * c2 * c3 + s1 * s2 * s3,
-    }
+fn export_orientation_from_pose(orientation: Orientation) -> Result<Orientation, String> {
+    let orientation = orientation
+        .normalized()
+        .ok_or_else(|| "orientation quaternion must be finite and non-zero".to_string())?;
+    Ok(orientation.compose(Orientation::from_yaw_pitch_roll_deg(
+        PANORAMA_BASE_YAW_DEG,
+        0.0,
+        0.0,
+    )))
 }
 
 fn finalize_exported_pano(exported: RgbaImage) -> RgbaImage {
@@ -530,13 +505,15 @@ mod tests {
     }
 
     #[test]
-    fn export_orientation_matches_threejs_yxz_euler() {
-        let orientation = export_orientation_from_pose(34.0, 12.0, -7.0);
+    fn export_orientation_composes_pose_then_texture_base_yaw() {
+        let pose = Orientation::from_yaw_pitch_roll_deg(34.0, 12.0, -7.0);
+        let orientation = export_orientation_from_pose(pose).unwrap();
+        let expected = pose.compose(Orientation::from_yaw_pitch_roll_deg(-90.0, 0.0, 0.0));
 
-        assert_close(orientation.w, 0.87946870366100183);
-        assert_close(orientation.x, 0.12062455744066670);
-        assert_close(orientation.y, -0.46039452397221503);
-        assert_close(orientation.z, -0.0046257669069801124);
+        assert_close(orientation.w, expected.w);
+        assert_close(orientation.x, expected.x);
+        assert_close(orientation.y, expected.y);
+        assert_close(orientation.z, expected.z);
     }
 
     #[test]
@@ -576,8 +553,7 @@ async fn preview_sky_removed_image(request: PreviewSkyRemovedRequest) -> Result<
         };
         let height =
             ((source.height() as f64 * width as f64 / source.width() as f64).round() as u32).max(1);
-        let orientation =
-            export_orientation_from_pose(request.yaw_deg, request.pitch_deg, request.roll_deg);
+        let orientation = export_orientation_from_pose(request.orientation)?;
         let corrected = export_equirectangular_with_mask_and_progress(
             &source,
             ExportRequest {
@@ -932,16 +908,22 @@ fn write_panopose_metadata(request: WriteMetadataRequest) -> Result<(), String> 
             .map_err(|err| format!("failed to copy source image for Save As: {err}"))?;
     }
 
+    let orientation = request
+        .orientation
+        .normalized()
+        .ok_or_else(|| "orientation quaternion must be finite and non-zero".to_string())?;
+    let (yaw_deg, pitch_deg, roll_deg) = orientation.to_legacy_ui_euler_deg(PANORAMA_BASE_YAW_DEG);
     let subject = format!(
         "PanoPose yaw={:.9}; pitch={:.9}; roll={:.9}; timezone={}",
-        request.yaw_deg, request.pitch_deg, request.roll_deg, request.timezone
+        yaw_deg, pitch_deg, roll_deg, request.timezone
     );
     let description = serde_json::json!({
         "panopose": {
-            "schema_version": 1,
-            "yaw_deg": request.yaw_deg,
-            "pitch_deg": request.pitch_deg,
-            "roll_deg": request.roll_deg,
+            "schema_version": 2,
+            "orientation_quaternion": orientation,
+            "yaw_deg": yaw_deg,
+            "pitch_deg": pitch_deg,
+            "roll_deg": roll_deg,
             "nadir_cap_enabled": request.nadir_cap_enabled,
             "nadir_cap_radius_deg": request.nadir_cap_radius_deg,
             "latitude_deg": request.latitude_deg,
@@ -958,9 +940,9 @@ fn write_panopose_metadata(request: WriteMetadataRequest) -> Result<(), String> 
         .arg("-overwrite_original")
         .arg("-XMP-GPano:UsePanoramaViewer=True")
         .arg("-XMP-GPano:ProjectionType=equirectangular")
-        .arg(format!("-XMP-GPano:PoseHeadingDegrees={}", request.yaw_deg))
-        .arg(format!("-XMP-GPano:PosePitchDegrees={}", request.pitch_deg))
-        .arg(format!("-XMP-GPano:PoseRollDegrees={}", request.roll_deg))
+        .arg(format!("-XMP-GPano:PoseHeadingDegrees={yaw_deg}"))
+        .arg(format!("-XMP-GPano:PosePitchDegrees={pitch_deg}"))
+        .arg(format!("-XMP-GPano:PoseRollDegrees={roll_deg}"))
         .arg(format!("-XMP:Subject={subject}"))
         .arg(format!("-XMP:Description={description}"))
         .arg(format!(
@@ -1093,7 +1075,9 @@ mod skyseg_tests {
 
     #[test]
     fn remapped_source_alpha_matches_corrected_mask_orientation() {
-        let orientation = export_orientation_from_pose(90.0, 0.0, 0.0);
+        let orientation =
+            export_orientation_from_pose(Orientation::from_yaw_pitch_roll_deg(90.0, 0.0, 0.0))
+                .unwrap();
         let corrected_sky_mask =
             GrayImage::from_fn(16, 8, |x, _| if x < 8 { Luma([255]) } else { Luma([0]) });
         let source_sky_mask =

@@ -7,6 +7,9 @@ PanoPose uses odd minor versions for development builds and even minor versions 
 ## v1.3 (development)
 
 - Accept uppercase and lowercase JPG/JPEG, PNG, and TIFF filename extensions in image dialogs, including uppercase `.JPG` files produced by cameras such as the GoPro MAX.
+- Replace ambiguous yaw/pitch/roll editing with quaternion-backed Azimuth Offset, Tilt Angle, and High-Side Azimuth controls, plus a compass visualization. The new model makes explicit that the horizon cannot be shifted uniformly up or down: it can only be tilted toward a chosen azimuth, with an equal displacement in the opposite direction.
+- Make `Align Target` use an exact shortest-arc spherical drag so the grabbed image direction remains under the cursor for horizontal, vertical, and diagonal drags.
+- Store the exact orientation quaternion in version-2 PanoPose metadata while continuing to read and write legacy Euler/GPano orientation fields.
 
 ## v1.2
 
