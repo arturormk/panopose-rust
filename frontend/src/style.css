@@ -409,6 +409,180 @@ canvas {
   height: 100%;
 }
 
+canvas.roll-mode {
+  cursor: ew-resize;
+}
+
+canvas.roll-mode.roll-navigating {
+  cursor: grabbing;
+}
+
+.viewer-mode-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 8px;
+  background: rgb(16 18 20 / 84%);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 24%);
+}
+
+.viewer-tool-button,
+.viewer-planetarium-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #c8d1dc;
+  cursor: pointer;
+}
+
+.viewer-tool-button:hover,
+.viewer-planetarium-button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 9%);
+  color: #f1f4f8;
+}
+
+.viewer-tool-button.active,
+.viewer-planetarium-button.active {
+  background: #d9b44a;
+  color: #181300;
+}
+
+.viewer-tool-button:focus-visible,
+.viewer-planetarium-button:focus-visible,
+.viewer-context-button:focus-visible {
+  outline: 2px solid #7fd1ff;
+  outline-offset: 2px;
+}
+
+.viewer-tool-button svg,
+.viewer-planetarium-button svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.viewer-context-button {
+  position: absolute;
+  top: 64px;
+  right: 16px;
+  z-index: 5;
+  min-height: 30px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 6px;
+  padding: 5px 9px;
+  background: rgb(16 18 20 / 84%);
+  color: #d8dee6;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.viewer-context-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.viewer-planetarium-button {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 50%;
+  background: rgb(16 18 20 / 84%);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 24%);
+}
+
+.viewer-planetarium-button.active svg {
+  fill: currentColor;
+}
+
+.viewer-planetarium-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.view-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 30px;
+  height: 30px;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.view-crosshair::before,
+.view-crosshair::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: rgb(241 244 248 / 72%);
+  box-shadow: 0 0 2px rgb(0 0 0 / 90%);
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.view-crosshair::before {
+  width: 30px;
+  height: 1px;
+}
+
+.view-crosshair::after {
+  width: 1px;
+  height: 30px;
+}
+
+.roll-pivot-indicator {
+  position: absolute;
+  width: 42px;
+  height: 42px;
+  border: 2px solid #d9b44a;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 70%),
+    0 0 8px rgb(217 180 74 / 35%);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.roll-pivot-indicator[hidden],
+.roll-hint[hidden] {
+  display: none;
+}
+
+#set-roll-pivot[hidden] {
+  display: none;
+}
+
+.roll-hint {
+  position: absolute;
+  top: calc(50% + 34px);
+  left: 50%;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: rgb(16 18 20 / 78%);
+  color: #e2c45f;
+  font-size: 12px;
+  pointer-events: none;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
 .overlay {
   position: absolute;
   left: 16px;

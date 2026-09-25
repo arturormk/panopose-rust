@@ -55,8 +55,8 @@ This initial blueprint should remain in the repository as a record of the origin
 As of the current implementation, PanoPose is a working Tauri + Rust + TypeScript/Three.js desktop app with:
 
 * target panorama loading and spherical viewing;
-* separate navigation and `Align Target` modes;
-* numeric azimuth-offset, tilt-angle, and high-side-azimuth controls backed by one orientation quaternion;
+* separate navigation, `Align Target`, and `Roll Target` modes selected from a persistent viewer toolbar or the `N`, `A`, and `R` shortcuts;
+* numeric azimuth-offset, panorama-up-tilt, and panorama-up-azimuth controls backed by one orientation quaternion;
 * reference panorama layers with opacity, target-only, reference-only, blend, and blink comparison modes;
 * a zoom-dependent Alt/Az grid;
 * EXIF/XMP metadata reading for time, timezone offset, GPS position, elevation, GPano pose, and PanoPose metadata;
@@ -77,7 +77,7 @@ As of the current implementation, PanoPose is a working Tauri + Rust + TypeScrip
 * a root `quickstart-panopose.sh` helper for dependency setup, current-platform release builds, and optional app installation;
 * a root `quickstart-skyseg-ncnn.sh` helper for guided Linux builds of the optional external `skyseg-ncnn` dependency under ignored `./thirdparty/` checkouts;
 * Sun, Moon, planet, and selected bright-star markers rendered as open circles with labels below;
-* a `Planetarium` toggle that renders the 1500 brightest bundled catalog stars above the horizon;
+* a bottom-right Planetarium star button that rapidly toggles the 1500 brightest bundled catalog stars above the horizon;
 * automatic Planetarium enabling when imported EXIF time places the Sun below the horizon;
 * a generated bright-star catalog subset bundled from the Yale Bright Star Catalog / NASA HEASARC Bright Star Catalog.
 
@@ -99,9 +99,9 @@ Calibration therefore means determining the panorama's orientation in real-world
 
 The fundamental transform should be represented internally as a 3-D rotation, preferably using a quaternion or equivalent robust representation.
 
-The UI exposes the same 3-D rotation as an azimuth offset plus a horizon plane described by tilt magnitude and high-side azimuth. This avoids presenting Euler axes as independent physical properties when their visible effect depends on viewing direction.
+The UI exposes the same 3-D rotation as an azimuth offset plus the direction in which the source panorama's zenith points. `Panorama-Up Tilt` is the angular distance from world zenith: 0° is upright, 90° is sideways, and 180° is upside down. `Panorama-Up Azimuth` gives the horizontal direction of the source zenith whenever it is away from either pole. This avoids presenting Euler axes as independent physical properties when their visible effect depends on viewing direction, and unlike an unoriented horizon plane it distinguishes upright from inverted panoramas.
 
-A rotation cannot translate the panorama horizon uniformly to a higher or lower altitude. The source horizon is a great circle, and a 3-D rotation always maps it to another great circle. The only available vertical-looking adjustment is therefore a tilt of that horizon plane: the horizon becomes highest at one azimuth, crosses altitude 0 degrees a quarter-turn to either side, and becomes equally low at the opposite azimuth. `Tilt Angle` is that maximum angular displacement, while `High-Side Azimuth` identifies the direction of its positive maximum. `Azimuth Offset` independently rotates the panorama around the zenith axis.
+A rotation cannot translate the panorama horizon uniformly to a higher or lower altitude. The source horizon is a great circle, and a 3-D rotation always maps it to another great circle. The only available vertical-looking adjustment is therefore a tilt of that horizon plane: the horizon becomes highest at one azimuth, crosses altitude 0 degrees a quarter-turn to either side, and becomes equally low at the opposite azimuth. Below 90° Panorama-Up Tilt, the high side of the horizon is opposite Panorama-Up Azimuth. `Azimuth Offset` supplies the remaining rotation around the source panorama's up direction.
 
 The quaternion is the authoritative internal representation. The numeric controls are a reversible decomposition of that quaternion, not separately accumulated rotations.
 
@@ -200,14 +200,21 @@ For example:
 
 * `Navigate`
 * `Align Target`
+* `Roll Target`
 
 The exact UI is open to experimentation, but accidental modification of a calibrated panorama while merely trying to look around should be difficult.
+
+The three mode controls remain visible at the top right of the 3-D view so alignment does not depend on sidebar scroll position. They use compact icons with accessible labels and hover titles that advertise the `N`, `A`, and `R` shortcuts. Shortcuts are ignored while editing form fields or while a modal dialog is open.
 
 Current implementation note:
 
 * `Align Target` records the source direction under the pointer and applies the shortest-arc quaternion from the initial pointer ray to the current pointer ray. The grabbed point therefore stays under the cursor for horizontal, vertical, and diagonal drags.
+* A crosshair permanently marks the visual center for general aiming. Entering `Roll Target` leaves its pivot unset; the first non-Shift pointer-down pins the exact world-space direction under the pointer. The same gesture may continue immediately into a horizontal roll.
+* Shift-dragging in `Roll Target` navigates the camera without changing the panorama quaternion or pinned ray. Later ordinary drags continue rotating around the same pivot, even when it is offscreen. Modifier behavior is latched when each drag starts.
+* A projected gold ring marks the pivot while it is on-screen, the status readout reports its altitude and azimuth, and `Choose New Pivot` clears it so the next click establishes another constraint.
+* A two-point astronomical workflow can align one image object to its marker, enter `Roll Target`, begin a roll directly on that matched object, Shift-navigate to another region, and then continue rolling about the first object so it stays fixed while a second planet or star is brought into its marker.
 * The fixed viewer-texture base yaw is composed separately from the calibrated orientation quaternion.
-* The numeric controls decompose the quaternion into Azimuth Offset, Tilt Angle, and High-Side Azimuth. High-Side Azimuth is retained but shown inactive when Tilt Angle is zero.
+* The numeric controls decompose the quaternion into Azimuth Offset, Panorama-Up Tilt, and Panorama-Up Azimuth. Panorama-Up Azimuth is retained but shown inactive at the unavoidable coordinate singularities of 0° and 180° tilt.
 
 Undo/redo should apply to pose adjustments.
 
@@ -241,10 +248,10 @@ The user should be able to adjust the target panorama's orientation numerically.
 The UI should expose:
 
 * azimuth offset;
-* tilt angle, constrained to 0–90°;
-* high-side azimuth, identifying where the tilted horizon plane is highest.
+* panorama-up tilt, constrained to 0–180°;
+* panorama-up azimuth, identifying where the source panorama's zenith points horizontally.
 
-A read-only compass should make the tilt direction visible. There is deliberately no horizon-height or altitude-offset control because a uniform vertical displacement is not representable by a rotation of a full sphere. Fine `+` and `-` controls are particularly important for tilt.
+A read-only compass should make the panorama-up direction visible. There is deliberately no horizon-height or altitude-offset control because a uniform vertical displacement is not representable by a rotation of a full sphere. Fine `+` and `-` controls are particularly important for tilt.
 
 A useful initial increment scheme might include:
 
@@ -260,7 +267,7 @@ Keyboard nudging should be considered.
 For example, the implementation might eventually provide:
 
 * directional keys for azimuth and tilt;
-* keys for rotating the high-side azimuth;
+* keys for rotating the panorama-up azimuth;
 * modifiers for coarse/fine increments.
 
 The specific bindings are not mandated.
@@ -1406,7 +1413,7 @@ A useful initial milestone might include the items below. Many are now implement
 3. Render it as a zoomable spherical panorama.
 4. Navigate independently of panorama adjustment.
 5. Maintain panorama orientation as a quaternion.
-6. Numeric azimuth-offset/tilt/high-side controls.
+6. Numeric azimuth-offset/panorama-up-tilt/panorama-up-azimuth controls.
 7. Fine 0.01° nudging.
 8. Alt/Az grid with cardinal directions.
 9. Site coordinates and timezone.

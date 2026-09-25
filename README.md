@@ -14,7 +14,9 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 
 - Load a target 2:1 equirectangular panorama and view it inside a zoomable Three.js sphere; image dialogs accept uppercase and lowercase JPG/JPEG, PNG, and TIFF filename extensions.
 - Navigate the view independently from panorama alignment.
-- Align the target panorama with quaternion-backed Azimuth Offset, Tilt Angle, and High-Side Azimuth controls. A spherical rotation cannot lower or raise the whole horizon: tilt raises it toward one azimuth and lowers it by the same amount toward the opposite azimuth.
+- Switch between Navigate, Align Target, and Roll Target from the compact top-right viewer toolbar or with the `N`, `A`, and `R` keyboard shortcuts; hover the icon buttons to see their labels and shortcuts.
+- Align the target panorama with quaternion-backed Azimuth Offset, Panorama-Up Tilt, and Panorama-Up Azimuth controls covering upright, sideways, and upside-down captures. A spherical rotation cannot lower or raise the whole horizon: tilt raises it toward one azimuth and lowers it by the same amount toward the opposite azimuth.
+- Use `Roll Target` to pin any visible star, planet, or terrain feature directly. The first click fixes the exact sky direction under the pointer, and that same gesture can continue horizontally to roll around it. Shift-dragging looks elsewhere without moving the panorama or losing the pinned match; a gold ring shows the pivot when visible, and `Choose New Pivot` arms another first click.
 - Add calibrated reference panoramas as layers.
 - Compare layers using blend, target-only, reference-only, and blink modes.
 - Display an Alt/Az grid with zoom-dependent spacing and cardinal labels.
@@ -34,7 +36,7 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 - Toggle automatic `skyseg-ncnn` sky removal and preview the target panorama with sky transparent.
 - Export PNG and Stellarium panoramas with sky removed to alpha when `Remove Sky` is enabled.
 - Display Sun, Moon, planet, and bright-star markers as open circles with labels below them.
-- Enable Planetarium mode to show the 1500 brightest catalog stars above the horizon for the selected site and time.
+- Blink Planetarium mode on and off from the bottom-right star button to show the 1500 brightest catalog stars above the horizon for the selected site and time.
 - Automatically enable Planetarium mode when EXIF-imported time places the Sun below the horizon.
 - Remember the last image directory within the current app session for image-open dialogs.
 - Build desktop packages with the bundled 512x512 application icon configured for Tauri release artifacts.
@@ -43,9 +45,10 @@ The source of truth for the original product direction is [docs/BLUEPRINT.md](do
 
 1. Take a picture with a 360-degree camera, or build a full-sphere 2:1 equirectangular panorama from multiple photos using stitching software.
 2. Load the panorama into PanoPose. Confirm that latitude, longitude, optional elevation, and `Panorama capture time` match where and when the image was taken; blank latitude/longitude fields and hidden astronomy controls mean no geolocation metadata was found.
-3. Set `Tilt Angle` and `High-Side Azimuth` until the panorama horizon plane matches the Alt/Az grid; the compass shows the direction in which the horizon is highest. Do not try to move the horizon uniformly up or down: that is not a possible full-sphere rotation. Every nonzero tilt makes the opposite side equally low.
-4. Switch to `Align Target` and drag the image of the Sun onto PanoPose's Sun marker. The grabbed image direction stays under the cursor, including during diagonal drags.
-5. Use `Save As` to write orientation/time/site metadata back into an unmapped image, `Export Pano As` to generate a calibrated PNG panorama, or `Export Stellarium ZIP` to generate a Stellarium landscape package.
+3. For a panorama captured with the camera sideways or upside down, first align one recognizable object with its Alt/Az marker, then select `Roll Target` and begin a drag on that matched object. The pointer-down pins its direction and horizontal movement rolls around it. Shift-drag to inspect another part of the sky, then resume ordinary dragging: the first object stays fixed while a second planet, star, or terrain feature is brought into alignment. Select `Choose New Pivot` before clicking a different constraint. `Panorama-Up Tilt` reads from 0° upright through 90° sideways to 180° upside down, and `Panorama-Up Azimuth` shows where the source zenith points.
+4. Refine `Azimuth Offset`, `Panorama-Up Tilt`, and `Panorama-Up Azimuth` as needed. Do not try to move the horizon uniformly up or down: that is not a possible full-sphere rotation. A tilted horizon rises on one side and falls equally on the opposite side.
+5. Switch to `Align Target` and drag the image of the Sun onto PanoPose's Sun marker. The grabbed image direction stays under the cursor, including during diagonal drags.
+6. Use `Save As` to write orientation/time/site metadata back into an unmapped image, `Export Pano As` to generate a calibrated PNG panorama, or `Export Stellarium ZIP` to generate a Stellarium landscape package.
 
 For ordinary phone photos, PanoPose intentionally imports only EXIF time/site metadata. It does not attempt to project normal rectilinear photos onto the sphere, because reliable FOV estimation is usually unavailable from phone EXIF alone.
 

@@ -7,18 +7,22 @@ import { confirm, message, open, save } from "@tauri-apps/plugin-dialog";
 import {
   IDENTITY_ORIENTATION,
   beginAlignmentDrag,
+  beginRollDrag,
   controlsFromOrientation,
   deserializeQuaternion,
   legacyEulerOrientation,
   meshQuaternion,
   orientationFromControls,
+  projectDirectionToViewport,
   solveAlignmentDrag,
+  solveRollDrag,
   type AlignmentDragState,
   type OrientationControls,
+  type RollDragState,
   type SerializedQuaternion,
 } from "./alignment";
 
-type Mode = "navigate" | "align";
+type Mode = "navigate" | "align" | "roll";
 type LayerKind = "target" | "reference";
 type ComparisonMode = "blend" | "target" | "reference" | "blink";
 type MetadataImportChoice = "time" | "site" | "both";
@@ -168,8 +172,8 @@ const MAX_IMAGE_LAYERS = 4;
 const BLINK_INTERVAL_MS = 550;
 const DEFAULT_CONTROLS: OrientationControls = {
   azimuthOffsetDeg: 0,
-  tiltAngleDeg: 0,
-  highSideAzimuthDeg: 180,
+  panoramaUpTiltDeg: 0,
+  panoramaUpAzimuthDeg: 0,
 };
 const DEFAULT_NADIR_RADIUS_DEG = 12;
 const MIN_NADIR_RADIUS_DEG = 1;
@@ -306,14 +310,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </section>
 
       <section class="panel">
-        <h2>Mode</h2>
-        <div class="segmented">
-          <button id="mode-navigate" class="active" type="button">Navigate</button>
-          <button id="mode-align" type="button">Align Target</button>
-        </div>
-      </section>
-
-      <section class="panel">
         <h2>Orientation</h2>
         <label class="field">Step
           <select id="step">
@@ -326,13 +322,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <label class="field">Azimuth Offset
           <input id="azimuth-offset" type="number" step="0.001" value="0" />
         </label>
-        <label class="field">Tilt Angle
-          <input id="tilt-angle" type="number" min="0" max="90" step="0.001" value="0" />
+        <label class="field">Panorama-Up Tilt
+          <input id="panorama-up-tilt" type="number" min="0" max="180" step="0.001" value="0" />
         </label>
-        <label class="field" id="high-side-field">High-Side Azimuth
-          <input id="high-side-azimuth" type="number" step="0.001" value="180" />
+        <label class="field" id="panorama-up-azimuth-field">Panorama-Up Azimuth
+          <input id="panorama-up-azimuth" type="number" step="0.001" value="0" />
         </label>
-        <div class="tilt-compass" aria-label="Horizon tilt compass">
+        <div class="tilt-compass" aria-label="Panorama-up azimuth compass">
           <svg viewBox="0 0 120 120" aria-hidden="true">
             <circle cx="60" cy="60" r="43"></circle>
             <path class="tilt-compass-cross" d="M60 17v86M17 60h86"></path>
@@ -340,9 +336,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <text x="60" y="13">N</text><text x="108" y="64">E</text>
             <text x="60" y="116">S</text><text x="8" y="64">W</text>
           </svg>
-          <div id="tilt-compass-readout">Level — high side 180.0° retained</div>
+          <div id="tilt-compass-readout">Upright — panorama-up azimuth 0.0° retained</div>
         </div>
-        <p class="orientation-help">Tilt describes one horizon plane. Its local appearance changes with viewing azimuth.</p>
+        <p class="orientation-help">Panorama-Up Tilt runs from 0° upright through 90° sideways to 180° upside down.</p>
       </section>
 
       <section class="panel">
@@ -372,20 +368,42 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <option value="Australia/Sydney"></option>
         </datalist>
         <button id="load-exif-metadata" class="button" type="button">Load EXIF from Image</button>
-        <label id="planetarium-mode-field" class="switch-field">
-          <span>Planetarium</span>
-          <input id="planetarium-mode" type="checkbox" />
-          <span class="switch-track" aria-hidden="true">
-            <span class="switch-thumb"></span>
-          </span>
-        </label>
         <button id="refresh-astro" class="button" type="button">Refresh Markers</button>
       </section>
       <div class="app-version" id="app-version">v1.2</div>
     </aside>
     <section class="viewer">
       <canvas id="viewer-canvas"></canvas>
-      <div class="overlay" id="readout">Navigate with drag and wheel. Switch to Align Target before changing panorama pose.</div>
+      <div class="viewer-mode-controls" role="toolbar" aria-label="Viewer mode">
+        <button id="mode-navigate" class="viewer-tool-button active" type="button" aria-label="Navigate" aria-keyshortcuts="N" title="Navigate (N)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v18M3 12h18"></path>
+            <path d="M12 3l-3 3M12 3l3 3M21 12l-3-3M21 12l-3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3"></path>
+          </svg>
+        </button>
+        <button id="mode-align" class="viewer-tool-button" type="button" aria-label="Align Target" aria-keyshortcuts="A" title="Align Target (A)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="6"></circle>
+            <path d="M12 2v5M12 17v5M2 12h5M17 12h5"></path>
+          </svg>
+        </button>
+        <button id="mode-roll" class="viewer-tool-button" type="button" aria-label="Roll Target" aria-keyshortcuts="R" title="Roll Target (R)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18.5 8A7.5 7.5 0 1 0 19 15"></path>
+            <path d="M18.5 3v5h-5"></path>
+          </svg>
+        </button>
+      </div>
+      <button id="set-roll-pivot" class="viewer-context-button" type="button" hidden>Choose New Pivot</button>
+      <div class="view-crosshair" id="view-crosshair" aria-hidden="true"></div>
+      <div class="roll-pivot-indicator" id="roll-pivot-indicator" aria-hidden="true" hidden></div>
+      <div class="roll-hint" id="roll-hint" hidden>Click a star or feature, then drag horizontally to roll</div>
+      <div class="overlay" id="readout">Navigate with drag and wheel. Use Align Target or Roll Target to change panorama pose.</div>
+      <button id="planetarium-mode" class="viewer-planetarium-button" type="button" aria-label="Toggle Planetarium stars" aria-pressed="false" title="Planetarium stars">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2.8l2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 2.8z"></path>
+        </svg>
+      </button>
     </section>
     <div class="modal-backdrop" id="metadata-import-modal" hidden>
       <section class="metadata-modal" role="dialog" aria-modal="true" aria-labelledby="metadata-import-title">
@@ -470,6 +488,11 @@ let yawView = Math.PI;
 let pitchView = 0;
 let dragging = false;
 let alignmentDrag: AlignmentDragState | null = null;
+let rollDrag: RollDragState | null = null;
+let rollPivotDirection: THREE.Vector3 | null = null;
+let rollNavigationDrag = false;
+let rollDragStartX = 0;
+let rollRadiansPerPixel = 0;
 let lastX = 0;
 let lastY = 0;
 let cursorAltAz: AltAzReadout | null = null;
@@ -482,14 +505,42 @@ let nadirCapTexture: THREE.CanvasTexture | null = null;
 let nadirPreviewRequestId = 0;
 
 function setMode(mode: Mode): void {
+  const enteringRoll = mode === "roll" && state.mode !== "roll";
   state.mode = mode;
+  if (enteringRoll) {
+    rollPivotDirection = null;
+  } else if (mode !== "roll") {
+    rollPivotDirection = null;
+  }
   document.querySelector("#mode-navigate")!.classList.toggle("active", mode === "navigate");
   document.querySelector("#mode-align")!.classList.toggle("active", mode === "align");
+  document.querySelector("#mode-roll")!.classList.toggle("active", mode === "roll");
+  document.querySelector<HTMLButtonElement>("#set-roll-pivot")!.hidden = mode !== "roll";
+  canvas.classList.toggle("roll-mode", mode === "roll");
+  syncRollPivotUi();
   updateReadout();
+}
+
+function handleModeShortcut(event: KeyboardEvent): void {
+  if (event.defaultPrevented || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (
+    target?.closest("input, textarea, select, [contenteditable='true']")
+    || document.querySelector(".modal-backdrop:not([hidden])")
+  ) {
+    return;
+  }
+  const mode = ({ n: "navigate", a: "align", r: "roll" } as const)[event.key.toLowerCase() as "n" | "a" | "r"];
+  if (!mode) return;
+  event.preventDefault();
+  setMode(mode);
 }
 
 document.querySelector("#mode-navigate")!.addEventListener("click", () => setMode("navigate"));
 document.querySelector("#mode-align")!.addEventListener("click", () => setMode("align"));
+document.querySelector("#mode-roll")!.addEventListener("click", () => setMode("roll"));
+document.querySelector("#set-roll-pivot")!.addEventListener("click", () => chooseNewRollPivot());
+document.addEventListener("keydown", handleModeShortcut);
 
 document.querySelector("#open-target")!.addEventListener("click", () => openTargetImage());
 document.querySelector("#export-image")!.addEventListener("click", () => exportCurrentTargetImage());
@@ -524,21 +575,21 @@ document.querySelector("#compare-blink")!.addEventListener("click", () => setCom
 document.querySelector("#layer-list")!.addEventListener("input", handleLayerListInput);
 document.querySelector("#layer-list")!.addEventListener("click", handleLayerListClick);
 
-for (const id of ["azimuth-offset", "tilt-angle", "high-side-azimuth"] as const) {
+for (const id of ["azimuth-offset", "panorama-up-tilt", "panorama-up-azimuth"] as const) {
   document.querySelector<HTMLInputElement>(`#${id}`)!.addEventListener("change", () => {
     const azimuthOffsetDeg = normalizeDegrees(readFiniteOrientationInput(
       "#azimuth-offset",
       state.orientationControls.azimuthOffsetDeg,
     ));
-    const tiltAngleDeg = THREE.MathUtils.clamp(readFiniteOrientationInput(
-      "#tilt-angle",
-      state.orientationControls.tiltAngleDeg,
-    ), 0, 90);
-    const highSideAzimuthDeg = normalizeDegrees(readFiniteOrientationInput(
-      "#high-side-azimuth",
-      state.orientationControls.highSideAzimuthDeg,
+    const panoramaUpTiltDeg = THREE.MathUtils.clamp(readFiniteOrientationInput(
+      "#panorama-up-tilt",
+      state.orientationControls.panoramaUpTiltDeg,
+    ), 0, 180);
+    const panoramaUpAzimuthDeg = normalizeDegrees(readFiniteOrientationInput(
+      "#panorama-up-azimuth",
+      state.orientationControls.panoramaUpAzimuthDeg,
     ));
-    state.orientationControls = { azimuthOffsetDeg, tiltAngleDeg, highSideAzimuthDeg };
+    state.orientationControls = { azimuthOffsetDeg, panoramaUpTiltDeg, panoramaUpAzimuthDeg };
     state.orientation = orientationFromControls(state.orientationControls);
     syncOrientationControls();
     applyPose();
@@ -555,32 +606,31 @@ document.querySelector<HTMLSelectElement>("#step")!.addEventListener("change", (
 });
 
 document.querySelector("#refresh-astro")!.addEventListener("click", () => refreshAstronomy());
-document.querySelector("#planetarium-mode")!.addEventListener("change", (event) => {
-  state.planetariumMode = (event.target as HTMLInputElement).checked;
-  if (!state.planetariumMode) {
-    state.starMarkers = [];
-    drawStars();
-    updateReadout();
-    return;
-  }
-  if (!hasCompleteSiteInputs()) {
-    state.planetariumMode = false;
-    (event.target as HTMLInputElement).checked = false;
-    alert("Planetarium mode requires latitude and longitude.");
-    updateSiteDependentControls();
-    return;
-  }
-  void refreshAstronomy();
+document.querySelector("#planetarium-mode")!.addEventListener("click", () => {
+  void setPlanetariumMode(!state.planetariumMode);
 });
 
 canvas.addEventListener("pointerdown", (event) => {
   dragging = true;
+  rollNavigationDrag = state.mode === "roll" && event.shiftKey;
+  canvas.classList.toggle("roll-navigating", rollNavigationDrag);
   lastX = event.clientX;
   lastY = event.clientY;
   alignmentDrag =
     state.mode === "align" && getTargetLayer()
       ? beginAlignmentDrag(state.orientation, pointerWorldDirection(event), PANORAMA_BASE_YAW_DEG)
       : null;
+  if (state.mode === "roll" && !rollNavigationDrag && !rollPivotDirection) {
+    rollPivotDirection = pointerWorldDirection(event);
+    syncRollPivotUi();
+    updateRollPivotIndicator();
+  }
+  rollDrag =
+    state.mode === "roll" && !rollNavigationDrag && getTargetLayer() && rollPivotDirection
+      ? beginRollDrag(state.orientation, rollPivotDirection)
+      : null;
+  rollDragStartX = event.clientX;
+  rollRadiansPerPixel = navigationDragScale().horizontalRadiansPerPixel;
   updateCursorAltAz(event);
   canvas.setPointerCapture(event.pointerId);
 });
@@ -596,7 +646,7 @@ canvas.addEventListener("pointermove", (event) => {
   lastX = event.clientX;
   lastY = event.clientY;
 
-  if (state.mode === "navigate") {
+  if (state.mode === "navigate" || rollNavigationDrag) {
     const dragScale = navigationDragScale();
     yawView += dx * dragScale.horizontalRadiansPerPixel;
     pitchView = THREE.MathUtils.clamp(
@@ -609,7 +659,17 @@ canvas.addEventListener("pointermove", (event) => {
       alignmentDrag,
       pointerWorldDirection(event),
       PANORAMA_BASE_YAW_DEG,
-      state.orientationControls.highSideAzimuthDeg,
+      state.orientationControls.panoramaUpAzimuthDeg,
+    );
+    state.orientation = solved.orientation;
+    state.orientationControls = solved.controls;
+    syncOrientationControls();
+    applyPose();
+  } else if (rollDrag) {
+    const solved = solveRollDrag(
+      rollDrag,
+      (event.clientX - rollDragStartX) * rollRadiansPerPixel,
+      state.orientationControls.panoramaUpAzimuthDeg,
     );
     state.orientation = solved.orientation;
     state.orientationControls = solved.controls;
@@ -623,6 +683,9 @@ canvas.addEventListener("pointermove", (event) => {
 canvas.addEventListener("pointerup", (event) => {
   dragging = false;
   alignmentDrag = null;
+  rollDrag = null;
+  rollNavigationDrag = false;
+  canvas.classList.remove("roll-navigating");
   updateCursorAltAz(event);
   if (canvas.hasPointerCapture(event.pointerId)) {
     canvas.releasePointerCapture(event.pointerId);
@@ -632,6 +695,9 @@ canvas.addEventListener("pointerup", (event) => {
 canvas.addEventListener("pointercancel", (event) => {
   dragging = false;
   alignmentDrag = null;
+  rollDrag = null;
+  rollNavigationDrag = false;
+  canvas.classList.remove("roll-navigating");
   if (canvas.hasPointerCapture(event.pointerId)) {
     canvas.releasePointerCapture(event.pointerId);
   }
@@ -640,6 +706,9 @@ canvas.addEventListener("pointercancel", (event) => {
 canvas.addEventListener("lostpointercapture", () => {
   dragging = false;
   alignmentDrag = null;
+  rollDrag = null;
+  rollNavigationDrag = false;
+  canvas.classList.remove("roll-navigating");
 });
 
 canvas.addEventListener("pointerleave", () => {
@@ -708,16 +777,17 @@ function applyPose(): void {
 function syncOrientationControls(): void {
   const controls = state.orientationControls;
   document.querySelector<HTMLInputElement>("#azimuth-offset")!.value = controls.azimuthOffsetDeg.toFixed(3);
-  document.querySelector<HTMLInputElement>("#tilt-angle")!.value = controls.tiltAngleDeg.toFixed(3);
-  document.querySelector<HTMLInputElement>("#high-side-azimuth")!.value = controls.highSideAzimuthDeg.toFixed(3);
-  const level = controls.tiltAngleDeg < 1e-9;
-  document.querySelector("#high-side-field")!.classList.toggle("orientation-inactive", level);
+  document.querySelector<HTMLInputElement>("#panorama-up-tilt")!.value = controls.panoramaUpTiltDeg.toFixed(3);
+  document.querySelector<HTMLInputElement>("#panorama-up-azimuth")!.value = controls.panoramaUpAzimuthDeg.toFixed(3);
+  const atPole = controls.panoramaUpTiltDeg < 1e-9 || controls.panoramaUpTiltDeg > 180 - 1e-9;
+  document.querySelector("#panorama-up-azimuth-field")!.classList.toggle("orientation-inactive", atPole);
   const arrow = document.querySelector<SVGPathElement>("#tilt-compass-arrow")!;
-  arrow.style.transform = `rotate(${controls.highSideAzimuthDeg}deg)`;
-  arrow.classList.toggle("inactive", level);
-  document.querySelector("#tilt-compass-readout")!.textContent = level
-    ? `Level — high side ${controls.highSideAzimuthDeg.toFixed(1)}° retained`
-    : `Tilt ${controls.tiltAngleDeg.toFixed(2)}° — high side ${controls.highSideAzimuthDeg.toFixed(1)}°`;
+  arrow.style.transform = `rotate(${controls.panoramaUpAzimuthDeg}deg)`;
+  arrow.classList.toggle("inactive", atPole);
+  const poleLabel = controls.panoramaUpTiltDeg < 90 ? "Upright" : "Upside down";
+  document.querySelector("#tilt-compass-readout")!.textContent = atPole
+    ? `${poleLabel} — panorama-up azimuth ${controls.panoramaUpAzimuthDeg.toFixed(1)}° retained`
+    : `Up tilt ${controls.panoramaUpTiltDeg.toFixed(2)}° — azimuth ${controls.panoramaUpAzimuthDeg.toFixed(1)}°`;
 }
 
 function readFiniteOrientationInput(selector: string, fallback: number): number {
@@ -726,7 +796,7 @@ function readFiniteOrientationInput(selector: string, fallback: number): number 
 }
 
 function syncStepInputs(): void {
-  for (const id of ["azimuth-offset", "tilt-angle", "high-side-azimuth"] as const) {
+  for (const id of ["azimuth-offset", "panorama-up-tilt", "panorama-up-azimuth"] as const) {
     document.querySelector<HTMLInputElement>(`#${id}`)!.step = String(state.step);
   }
 }
@@ -1154,6 +1224,55 @@ function navigationDragScale(): { horizontalRadiansPerPixel: number; verticalRad
   };
 }
 
+function chooseNewRollPivot(): void {
+  if (state.mode !== "roll") return;
+  rollPivotDirection = null;
+  syncRollPivotUi();
+  updateRollPivotIndicator();
+  updateReadout();
+}
+
+function syncRollPivotUi(): void {
+  const inRollMode = state.mode === "roll";
+  const hasPivot = rollPivotDirection !== null;
+  const button = document.querySelector<HTMLButtonElement>("#set-roll-pivot")!;
+  const hint = document.querySelector<HTMLElement>("#roll-hint")!;
+  button.disabled = !hasPivot;
+  hint.hidden = !inRollMode;
+  hint.textContent = hasPivot
+    ? "Drag: roll around pivot · Shift-drag: look around"
+    : "Click a star or feature, then drag horizontally to roll";
+}
+
+async function setPlanetariumMode(enabled: boolean): Promise<void> {
+  if (enabled && !hasCompleteSiteInputsSafely()) {
+    state.planetariumMode = false;
+    syncPlanetariumButton();
+    alert("Planetarium mode requires latitude and longitude.");
+    return;
+  }
+  state.planetariumMode = enabled;
+  syncPlanetariumButton();
+  if (!enabled) {
+    state.starMarkers = [];
+    drawStars();
+    updateReadout();
+    return;
+  }
+  await refreshAstronomy();
+}
+
+function syncPlanetariumButton(): void {
+  const button = document.querySelector<HTMLButtonElement>("#planetarium-mode")!;
+  const hasSite = hasCompleteSiteInputsSafely();
+  button.disabled = !hasSite;
+  button.classList.toggle("active", state.planetariumMode);
+  button.setAttribute("aria-pressed", String(state.planetariumMode));
+  button.title = hasSite
+    ? `Planetarium stars (${state.planetariumMode ? "on" : "off"})`
+    : "Planetarium stars require latitude and longitude";
+}
+
 async function refreshAstronomy(): Promise<void> {
   const objects: CelestialObject[] = ["sun", "moon", "venus", "mars", "jupiter", "saturn", "vega", "sirius"];
 
@@ -1213,7 +1332,7 @@ async function enablePlanetariumIfSunIsBelowHorizon(): Promise<void> {
   if (!sun || sun.alt_az.altitude_deg >= 0 || state.planetariumMode) return;
 
   state.planetariumMode = true;
-  document.querySelector<HTMLInputElement>("#planetarium-mode")!.checked = true;
+  syncPlanetariumButton();
   await refreshAstronomy();
 }
 
@@ -1445,9 +1564,8 @@ function applyImageMetadata(
     state.orientation = { ...metadata.orientation };
     state.orientationControls = controlsFromOrientation(
       state.orientation,
-      state.orientationControls.highSideAzimuthDeg,
+      state.orientationControls.panoramaUpAzimuthDeg,
     );
-    state.orientation = orientationFromControls(state.orientationControls);
     syncOrientationControls();
     applyPose();
   }
@@ -1524,20 +1642,16 @@ function hasCompleteSiteInputs(): boolean {
 function updateSiteDependentControls(): void {
   const hasSite = hasCompleteSiteInputsSafely();
 
-  const planetariumField = document.querySelector<HTMLElement>("#planetarium-mode-field")!;
-  const planetariumInput = document.querySelector<HTMLInputElement>("#planetarium-mode")!;
   const refreshButton = document.querySelector<HTMLButtonElement>("#refresh-astro")!;
 
-  planetariumField.hidden = !hasSite;
   refreshButton.hidden = !hasSite;
-  planetariumInput.disabled = !hasSite;
   refreshButton.disabled = !hasSite;
 
   if (!hasSite) {
     state.planetariumMode = false;
-    planetariumInput.checked = false;
     clearAstronomyOverlays();
   }
+  syncPlanetariumButton();
 }
 
 function handleSiteInputChange(): void {
@@ -2775,13 +2889,27 @@ function updateReadout(): void {
   const cursorText = cursorAltAz
     ? `cursor alt ${formatSignedFixedDegree(cursorAltAz.altitudeDeg)} az ${formatFixedDegree(cursorAltAz.azimuthDeg)}`
     : "cursor alt -- az --";
+  const modeLabel = state.mode === "navigate"
+    ? "Navigate"
+    : state.mode === "align"
+      ? "Align Target"
+      : "Roll Target";
+  const pivotText = state.mode === "roll"
+    ? rollPivotDirection
+      ? (() => {
+        const pivot = vectorToAltAz(rollPivotDirection);
+        return `pivot alt ${formatSignedFixedDegree(pivot.altitudeDeg)} az ${formatFixedDegree(pivot.azimuthDeg)} | `;
+      })()
+      : "pivot not set | "
+    : "";
   readout.textContent =
-    `${state.mode === "navigate" ? "Navigate" : "Align Target"} | ` +
+    `${modeLabel} | ` +
     `${layerMode} | ` +
     `${cursorText} | ` +
+    pivotText +
     `az offset ${state.orientationControls.azimuthOffsetDeg.toFixed(3)} ` +
-    `tilt ${state.orientationControls.tiltAngleDeg.toFixed(3)} ` +
-    `high side ${state.orientationControls.highSideAzimuthDeg.toFixed(3)} | ` +
+    `up tilt ${state.orientationControls.panoramaUpTiltDeg.toFixed(3)} ` +
+    `up az ${state.orientationControls.panoramaUpAzimuthDeg.toFixed(3)} | ` +
     `${referenceCount} reference layer${referenceCount === 1 ? "" : "s"} | ` +
     `${state.markers.length} astronomy markers | ` +
     `${state.planetariumMode ? `${state.starMarkers.length} stars | ` : ""}` +
@@ -2810,7 +2938,29 @@ function resize(): void {
 function animate(): void {
   requestAnimationFrame(animate);
   updateCameraAim();
+  camera.updateMatrixWorld(true);
+  updateRollPivotIndicator();
   renderer.render(scene, camera);
+}
+
+function updateRollPivotIndicator(): void {
+  const indicator = document.querySelector<HTMLElement>("#roll-pivot-indicator")!;
+  if (state.mode !== "roll" || !rollPivotDirection) {
+    indicator.hidden = true;
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const projected = projectDirectionToViewport(
+    rollPivotDirection,
+    camera,
+    rect.width,
+    rect.height,
+  );
+  indicator.hidden = projected === null;
+  if (!projected) return;
+  indicator.style.left = `${projected.leftPx}px`;
+  indicator.style.top = `${projected.topPx}px`;
 }
 
 function updateCameraAim(): void {

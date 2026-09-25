@@ -4,11 +4,14 @@ import * as THREE from "three";
 
 import {
   beginAlignmentDrag,
+  beginRollDrag,
   controlsFromOrientation,
   legacyEulerOrientation,
   meshQuaternion,
   orientationFromControls,
+  projectDirectionToViewport,
   solveAlignmentDrag,
+  solveRollDrag,
   type OrientationControls,
 } from "../src/alignment.ts";
 
@@ -25,41 +28,58 @@ function direction(x: number, y: number, z: number): THREE.Vector3 {
 
 test("orientation controls round-trip without depending on viewing azimuth", () => {
   const cases: OrientationControls[] = [
-    { azimuthOffsetDeg: 0, tiltAngleDeg: 0, highSideAzimuthDeg: 217 },
-    { azimuthOffsetDeg: 30, tiltAngleDeg: 30, highSideAzimuthDeg: 0 },
-    { azimuthOffsetDeg: 125, tiltAngleDeg: 42, highSideAzimuthDeg: 90 },
-    { azimuthOffsetDeg: 275, tiltAngleDeg: 67, highSideAzimuthDeg: 241 },
+    { azimuthOffsetDeg: 0, panoramaUpTiltDeg: 0, panoramaUpAzimuthDeg: 217 },
+    { azimuthOffsetDeg: 30, panoramaUpTiltDeg: 30, panoramaUpAzimuthDeg: 0 },
+    { azimuthOffsetDeg: 125, panoramaUpTiltDeg: 90, panoramaUpAzimuthDeg: 90 },
+    { azimuthOffsetDeg: 275, panoramaUpTiltDeg: 120, panoramaUpAzimuthDeg: 241 },
+    { azimuthOffsetDeg: 42, panoramaUpTiltDeg: 179, panoramaUpAzimuthDeg: 315 },
+    { azimuthOffsetDeg: 81, panoramaUpTiltDeg: 180, panoramaUpAzimuthDeg: 123 },
   ];
 
   for (const controls of cases) {
     const orientation = orientationFromControls(controls);
-    const recovered = controlsFromOrientation(orientation, controls.highSideAzimuthDeg);
+    const recovered = controlsFromOrientation(orientation, controls.panoramaUpAzimuthDeg);
     assertQuaternionEquivalent(
       meshQuaternion(orientationFromControls(recovered), BASE_YAW_DEG),
       meshQuaternion(orientation, BASE_YAW_DEG),
     );
-    assert.ok(Math.abs(recovered.tiltAngleDeg - controls.tiltAngleDeg) < EPSILON);
-    if (controls.tiltAngleDeg === 0) {
-      assert.equal(recovered.highSideAzimuthDeg, controls.highSideAzimuthDeg);
+    assert.ok(Math.abs(recovered.panoramaUpTiltDeg - controls.panoramaUpTiltDeg) < EPSILON);
+    if (controls.panoramaUpTiltDeg === 0 || controls.panoramaUpTiltDeg === 180) {
+      assert.equal(recovered.panoramaUpAzimuthDeg, controls.panoramaUpAzimuthDeg);
     }
   }
 });
 
-test("high-side azimuth identifies where the panorama horizon reaches its highest altitude", () => {
+test("an upside-down quaternion survives decomposition with a different retained pole azimuth", () => {
+  const orientation = orientationFromControls({
+    azimuthOffsetDeg: 81,
+    panoramaUpTiltDeg: 180,
+    panoramaUpAzimuthDeg: 123,
+  });
+  const recovered = controlsFromOrientation(orientation, 17);
+
+  assert.equal(recovered.panoramaUpAzimuthDeg, 17);
+  assertQuaternionEquivalent(
+    meshQuaternion(orientationFromControls(recovered), BASE_YAW_DEG),
+    meshQuaternion(orientation, BASE_YAW_DEG),
+  );
+});
+
+test("panorama-up azimuth is opposite the high side of the horizon below ninety degrees", () => {
   const tiltDeg = 35;
-  const highSideAzimuthDeg = 90;
+  const panoramaUpAzimuthDeg = 270;
   const orientation = orientationFromControls({
     azimuthOffsetDeg: 0,
-    tiltAngleDeg: tiltDeg,
-    highSideAzimuthDeg,
+    panoramaUpTiltDeg: tiltDeg,
+    panoramaUpAzimuthDeg,
   });
   const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(
     new THREE.Quaternion(orientation.x, orientation.y, orientation.z, orientation.w),
   );
-  const azimuth = THREE.MathUtils.degToRad(highSideAzimuthDeg);
+  const azimuth = THREE.MathUtils.degToRad((panoramaUpAzimuthDeg + 180) % 360);
   const altitude = THREE.MathUtils.degToRad(tiltDeg);
   const highHorizonPoint = new THREE.Vector3(
-    -Math.cos(altitude) * Math.sin(azimuth),
+    Math.cos(altitude) * Math.sin(azimuth),
     Math.sin(altitude),
     Math.cos(altitude) * Math.cos(azimuth),
   );
@@ -81,8 +101,8 @@ test("a diagonal Align Target drag keeps the grabbed source point under the curs
   ];
   const initial = orientationFromControls({
     azimuthOffsetDeg: 23,
-    tiltAngleDeg: 16,
-    highSideAzimuthDeg: 132,
+    panoramaUpTiltDeg: 16,
+    panoramaUpAzimuthDeg: 312,
   });
 
   for (let index = 0; index < starts.length; index += 1) {
@@ -102,8 +122,8 @@ test("Align Target applies exactly the shortest-arc cursor rotation", () => {
   const end = direction(-0.25, 0.3, -1);
   const initial = orientationFromControls({
     azimuthOffsetDeg: 76,
-    tiltAngleDeg: 12,
-    highSideAzimuthDeg: 310,
+    panoramaUpTiltDeg: 12,
+    panoramaUpAzimuthDeg: 130,
   });
   const drag = beginAlignmentDrag(initial, start, BASE_YAW_DEG);
   const solved = solveAlignmentDrag(drag, end, BASE_YAW_DEG, 310);
@@ -114,14 +134,130 @@ test("Align Target applies exactly the shortest-arc cursor rotation", () => {
   assertQuaternionEquivalent(meshQuaternion(solved.orientation, BASE_YAW_DEG), expected);
 });
 
-test("tilt is constrained to the supported zero-to-ninety-degree range", () => {
-  const orientation = orientationFromControls({
+test("roll keeps its visual-center axis fixed at any altitude", () => {
+  const initial = orientationFromControls({
     azimuthOffsetDeg: 0,
-    tiltAngleDeg: 140,
-    highSideAzimuthDeg: 45,
+    panoramaUpTiltDeg: 0,
+    panoramaUpAzimuthDeg: 90,
   });
-  const recovered = controlsFromOrientation(orientation, 45);
-  assert.ok(Math.abs(recovered.tiltAngleDeg - 90) < EPSILON);
+  const axis = direction(1, 0.4, 1);
+  const drag = beginRollDrag(initial, axis);
+  const solved = solveRollDrag(drag, THREE.MathUtils.degToRad(90), 90);
+
+  assert.ok(axis.angleTo(axis.clone().applyQuaternion(
+    new THREE.Quaternion(
+      solved.orientation.x,
+      solved.orientation.y,
+      solved.orientation.z,
+      solved.orientation.w,
+    ),
+  )) < EPSILON);
+});
+
+test("roll about a horizontal center ray passes through sideways to upside down", () => {
+  const initial = orientationFromControls({
+    azimuthOffsetDeg: 0,
+    panoramaUpTiltDeg: 0,
+    panoramaUpAzimuthDeg: 90,
+  });
+  const drag = beginRollDrag(initial, direction(1, 0, 1));
+  const sideways = solveRollDrag(drag, THREE.MathUtils.degToRad(90), 90);
+  const inverted = solveRollDrag(drag, THREE.MathUtils.degToRad(180), 90);
+
+  assert.ok(Math.abs(sideways.controls.panoramaUpTiltDeg - 90) < EPSILON);
+  assert.ok(Math.abs(inverted.controls.panoramaUpTiltDeg - 180) < EPSILON);
+});
+
+test("roll is solved from the drag-start orientation rather than accumulated deltas", () => {
+  const initial = orientationFromControls({
+    azimuthOffsetDeg: 37,
+    panoramaUpTiltDeg: 64,
+    panoramaUpAzimuthDeg: 212,
+  });
+  const axis = direction(-0.3, 0, -1);
+  const drag = beginRollDrag(initial, axis);
+  const angle = THREE.MathUtils.degToRad(73);
+  const solved = solveRollDrag(drag, angle, 212);
+  const expected = new THREE.Quaternion()
+    .setFromAxisAngle(axis, angle)
+    .multiply(new THREE.Quaternion(initial.x, initial.y, initial.z, initial.w));
+
+  assertQuaternionEquivalent(
+    new THREE.Quaternion(
+      solved.orientation.x,
+      solved.orientation.y,
+      solved.orientation.z,
+      solved.orientation.w,
+    ),
+    expected,
+  );
+});
+
+test("successive roll gestures preserve the same pinned world direction", () => {
+  const initial = orientationFromControls({
+    azimuthOffsetDeg: 18,
+    panoramaUpTiltDeg: 41,
+    panoramaUpAzimuthDeg: 286,
+  });
+  const axis = direction(-0.4, 0.7, -1);
+  const initialQuaternion = new THREE.Quaternion(initial.x, initial.y, initial.z, initial.w);
+  const pinnedSourcePoint = axis.clone().applyQuaternion(initialQuaternion.clone().invert());
+  const first = solveRollDrag(
+    beginRollDrag(initial, axis),
+    THREE.MathUtils.degToRad(47),
+    286,
+  );
+  const second = solveRollDrag(
+    beginRollDrag(first.orientation, axis),
+    THREE.MathUtils.degToRad(-113),
+    first.controls.panoramaUpAzimuthDeg,
+  );
+  const finalQuaternion = new THREE.Quaternion(
+    second.orientation.x,
+    second.orientation.y,
+    second.orientation.z,
+    second.orientation.w,
+  );
+
+  assert.ok(pinnedSourcePoint.applyQuaternion(finalQuaternion).angleTo(axis) < EPSILON);
+});
+
+test("positive roll around the centered south horizon ray appears clockwise", () => {
+  const initial = orientationFromControls({
+    azimuthOffsetDeg: 0,
+    panoramaUpTiltDeg: 0,
+    panoramaUpAzimuthDeg: 0,
+  });
+  const drag = beginRollDrag(initial, new THREE.Vector3(0, 0, -1));
+  const solved = solveRollDrag(drag, THREE.MathUtils.degToRad(30), 0);
+  const panoramaUp = new THREE.Vector3(0, 1, 0).applyQuaternion(
+    new THREE.Quaternion(
+      solved.orientation.x,
+      solved.orientation.y,
+      solved.orientation.z,
+      solved.orientation.w,
+    ),
+  );
+
+  assert.ok(panoramaUp.x > 0, "the top of the panorama should move toward screen right");
+});
+
+test("pivot projection reports centered, off-center, and hidden directions", () => {
+  const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 2000);
+  camera.position.set(0, 0, 0.01);
+  camera.lookAt(0, 0, -1);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld(true);
+
+  const centered = projectDirectionToViewport(new THREE.Vector3(0, 0, -1), camera, 100, 100);
+  const offCenter = projectDirectionToViewport(direction(0.5, 0, -1), camera, 100, 100);
+
+  assert.ok(centered);
+  assert.ok(Math.abs(centered.leftPx - 50) < EPSILON);
+  assert.ok(Math.abs(centered.topPx - 50) < EPSILON);
+  assert.ok(offCenter && offCenter.leftPx > 50 && offCenter.leftPx < 100);
+  assert.equal(projectDirectionToViewport(direction(2, 0, -1), camera, 100, 100), null);
+  assert.equal(projectDirectionToViewport(new THREE.Vector3(0, 0, 1), camera, 100, 100), null);
 });
 
 test("legacy Euler metadata retains its old full-mesh interpretation", () => {
