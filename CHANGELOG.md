@@ -7,11 +7,14 @@ PanoPose uses odd minor versions for development builds and even minor versions 
 ## v1.3 (development)
 
 - Accept uppercase and lowercase JPG/JPEG, PNG, and TIFF filename extensions in image dialogs, including uppercase `.JPG` files produced by cameras such as the GoPro MAX.
+- Add `--force-rebuild` to the release quickstart for clean Rust and frontend rebuilds.
 - Replace ambiguous yaw/pitch/roll editing with quaternion-backed Azimuth Offset, Panorama-Up Tilt, and Panorama-Up Azimuth controls, plus a compass visualization. The 0–180° panorama-up model represents upright, sideways, and upside-down captures while making explicit that the horizon cannot be shifted uniformly up or down.
 - Add a permanent center crosshair and a dedicated `Roll Target` mode whose first click pins the exact sky direction beneath the pointer and can immediately continue into a horizontal roll. Shift-drag navigation preserves that pivot while inspecting the rest of the sky; a projected ring, Alt/Az readout, and explicit repick action keep the active constraint visible.
 - Move Navigate, Align Target, and Roll Target into a compact top-right viewer toolbar with `N`, `A`, and `R` shortcuts, and move Planetarium to a bottom-right star button for rapid alignment blinking.
 - Make `Align Target` use an exact shortest-arc spherical drag so the grabbed image direction remains under the cursor for horizontal, vertical, and diagonal drags.
+- Use the same calibrated orientation quaternion for the live preview, sky-removal preview, PNG export, and Stellarium export, with the viewer texture convention kept separate from the saved pose.
 - Store the exact orientation quaternion in version-2 PanoPose metadata while continuing to read and write legacy Euler/GPano orientation fields.
+- Keep the Layers section focused on `Add Reference` until a reference panorama is loaded, then reveal Target, Reference, Fade, and Blink comparison buttons together with per-layer Show and opacity controls.
 
 ## v1.2
 
@@ -24,7 +27,6 @@ PanoPose uses odd minor versions for development builds and even minor versions 
 - Make `Align Target` vertical dragging follow the expected image-drag direction.
 - Fix Tauri frontend build hooks for the frontend working directory and use `dev.panopose.desktop` as the bundle identifier.
 - Build `panopose-cli` in the quickstart release flow and include it alongside `panopose` in Linux `.deb` and `.rpm` packages.
-- Add `--force-rebuild` to the release quickstart for clean Rust and frontend rebuilds.
 
 ## v1.0.0
 

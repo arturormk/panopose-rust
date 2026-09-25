@@ -57,7 +57,7 @@ As of the current implementation, PanoPose is a working Tauri + Rust + TypeScrip
 * target panorama loading and spherical viewing;
 * separate navigation, `Align Target`, and `Roll Target` modes selected from a persistent viewer toolbar or the `N`, `A`, and `R` shortcuts;
 * numeric azimuth-offset, panorama-up-tilt, and panorama-up-azimuth controls backed by one orientation quaternion;
-* reference panorama layers with opacity, target-only, reference-only, blend, and blink comparison modes;
+* reference panorama layers with per-layer visibility and opacity plus Target, Reference, Fade, and Blink comparison modes, revealed only after a reference is loaded;
 * a zoom-dependent Alt/Az grid;
 * EXIF/XMP metadata reading for time, timezone offset, GPS position, elevation, GPano pose, and PanoPose metadata;
 * site fields that stay blank when no geolocation metadata is found, with latitude/longitude entry accepting decimal point or decimal comma input and imported coordinates rounded to five decimal places;
@@ -320,6 +320,12 @@ Possible comparison modes include:
 * opacity blend;
 * rapid blink/toggle;
 * possibly wipe/split comparison later.
+
+Current implementation note:
+
+* Before a reference panorama is loaded, the Layers section shows only `Add Reference`; opening a target by itself does not expose inactive comparison or layer controls.
+* Once at least one reference is present, the section reveals the Target, Reference, Fade, and Blink buttons together with Show and opacity controls for the target and reference layers.
+* Removing the final reference returns the section to its compact add-only state.
 
 The two panoramas may have different resolutions.
 

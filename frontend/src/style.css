@@ -232,12 +232,9 @@ a {
   gap: 8px;
 }
 
-.empty-layers {
-  padding: 10px;
-  border: 1px dashed #3b434c;
-  border-radius: 6px;
-  color: #8794a1;
-  font-size: 12px;
+#reference-layer-controls:not([hidden]) {
+  display: grid;
+  gap: 10px;
 }
 
 .layer-row {

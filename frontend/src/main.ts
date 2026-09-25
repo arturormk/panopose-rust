@@ -272,40 +272,40 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <section class="panel">
         <h2>Layers</h2>
         <button id="add-reference" class="button" type="button">Add Reference</button>
-        <div class="segmented segmented-four">
-          <button id="compare-blend" class="icon-button active" type="button" aria-label="Blend" title="Blend">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="9" cy="12" r="6"></circle>
-              <circle cx="15" cy="12" r="6"></circle>
-            </svg>
-          </button>
-          <button id="compare-target" class="icon-button" type="button" aria-label="Target" title="Target">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="4" y="5" width="16" height="14" rx="2"></rect>
-              <path d="M8 15l2.5-3 2 2.2 2.5-3.2 3 4"></path>
-              <circle cx="9" cy="9" r="1.2"></circle>
-            </svg>
-          </button>
-          <button id="compare-reference" class="icon-button" type="button" aria-label="Reference" title="Reference">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="5" y="4" width="14" height="16" rx="2"></rect>
-              <path d="M9 8h6"></path>
-              <path d="M9 12h6"></path>
-              <path d="M9 16h4"></path>
-            </svg>
-          </button>
-          <button id="compare-blink" class="icon-button" type="button" aria-label="Blink" title="Blink">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 7h10v10H7z"></path>
-              <path d="M4 4h10"></path>
-              <path d="M4 4v10"></path>
-              <path d="M20 20H10"></path>
-              <path d="M20 20V10"></path>
-            </svg>
-          </button>
-        </div>
-        <div class="layer-list" id="layer-list">
-          <div class="empty-layers">Open a target image or add a reference.</div>
+        <div id="reference-layer-controls" hidden>
+          <div class="segmented segmented-four">
+            <button id="compare-target" class="icon-button" type="button" aria-label="Target" title="Target">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="5" width="16" height="14" rx="2"></rect>
+                <path d="M8 15l2.5-3 2 2.2 2.5-3.2 3 4"></path>
+                <circle cx="9" cy="9" r="1.2"></circle>
+              </svg>
+            </button>
+            <button id="compare-reference" class="icon-button" type="button" aria-label="Reference" title="Reference">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="5" y="4" width="14" height="16" rx="2"></rect>
+                <path d="M9 8h6"></path>
+                <path d="M9 12h6"></path>
+                <path d="M9 16h4"></path>
+              </svg>
+            </button>
+            <button id="compare-blend" class="icon-button active" type="button" aria-label="Fade" title="Fade">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="9" cy="12" r="6"></circle>
+                <circle cx="15" cy="12" r="6"></circle>
+              </svg>
+            </button>
+            <button id="compare-blink" class="icon-button" type="button" aria-label="Blink" title="Blink">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 7h10v10H7z"></path>
+                <path d="M4 4h10"></path>
+                <path d="M4 4v10"></path>
+                <path d="M20 20H10"></path>
+                <path d="M20 20V10"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="layer-list" id="layer-list"></div>
         </div>
       </section>
 
@@ -1432,9 +1432,12 @@ function updateLayerRenderOrders(): void {
 }
 
 function renderLayerList(): void {
+  const referenceLayerControls = document.querySelector<HTMLDivElement>("#reference-layer-controls")!;
   const layerList = document.querySelector<HTMLDivElement>("#layer-list")!;
-  if (state.layers.length === 0) {
-    layerList.innerHTML = `<div class="empty-layers">Open a target image or add a reference.</div>`;
+  const hasReference = getReferenceLayers().length > 0;
+  referenceLayerControls.hidden = !hasReference;
+  if (!hasReference) {
+    layerList.replaceChildren();
     return;
   }
 
