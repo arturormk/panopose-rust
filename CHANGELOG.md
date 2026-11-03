@@ -26,7 +26,7 @@ PanoPose uses odd minor versions for development builds and even minor versions 
 - Disable and hide site-dependent astronomy controls when latitude/longitude are missing, warn when opening a target without site metadata, and refresh astronomy markers when the user completes the site fields.
 - Make `Align Target` vertical dragging follow the expected image-drag direction.
 - Fix Tauri frontend build hooks for the frontend working directory and use `dev.panopose.desktop` as the bundle identifier.
-- Build `panopose-cli` in the quickstart release flow and include it alongside `panopose` in Linux `.deb` and `.rpm` packages.
+- Build `panopose-cli` in the quickstart release flow and include it alongside `panopose` in Linux `.deb` and `.rpm` packages. This supersedes v1.0.0, which kept the CLI out of release assets.
 
 ## v1.0.0
 
